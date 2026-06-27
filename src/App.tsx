@@ -1,0 +1,67 @@
+// ============================================
+// MediCMS Desktop v4.0 - App Router
+// ============================================
+
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AppShell } from '@/components/layout/AppShell';
+import Login from '@/pages/Login';
+import Dashboard from '@/pages/Dashboard';
+import StudentList from '@/pages/students/StudentList';
+import NewAdmission from '@/pages/students/NewAdmission';
+import RecordPayment from '@/pages/payments/RecordPayment';
+import ReprintReceipt from '@/pages/payments/ReprintReceipt';
+import Reports from '@/pages/Reports';
+import Settings from '@/pages/Settings';
+import EditStudent from '@/pages/students/EditStudent';
+import StudentLedger from '@/pages/ledger/StudentLedger';
+import AddFeeDemand from '@/pages/ledger/AddFeeDemand';
+import AddCharge from '@/pages/ledger/AddCharge';
+import LedgerAdjustment from '@/pages/ledger/LedgerAdjustment';
+import FeeTemplates from '@/pages/fee-templates/FeeTemplates';
+import ExpensesList from '@/pages/expenses/ExpensesList';
+import AddExpense from '@/pages/expenses/AddExpense';
+import TagBankWithdrawals from '@/pages/expenses/TagBankWithdrawals';
+import BankAccount from '@/pages/bank/BankAccount';
+import AddBankTransaction from '@/pages/bank/AddBankTransaction';
+import AuditTrail from '@/pages/audit/AuditTrail';
+import DataImport from '@/pages/import/DataImport';
+import { useAuthStore } from '@/stores/authStore';
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
+  return isLoggedIn ? <>{children}</> : <Navigate to="/login" replace />;
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="students" element={<StudentList />} />
+          <Route path="ledger" element={<Navigate to="/students" replace />} />
+          <Route path="admissions/new" element={<NewAdmission />} />
+          <Route path="payments/record" element={<RecordPayment />} />
+          <Route path="payments/reprint" element={<ReprintReceipt />} />
+          <Route path="reports" element={<Reports />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="students/:sno/edit" element={<EditStudent />} />
+          <Route path="ledger/:sno" element={<StudentLedger />} />
+          <Route path="ledger/:sno/add-demand" element={<AddFeeDemand />} />
+          <Route path="ledger/:sno/add-charge" element={<AddCharge />} />
+          <Route path="ledger/:sno/adjust" element={<LedgerAdjustment />} />
+          <Route path="fee-templates" element={<FeeTemplates />} />
+          <Route path="expenses" element={<ExpensesList />} />
+          <Route path="expenses/add" element={<AddExpense />} />
+          <Route path="expenses/tag-from-bank" element={<TagBankWithdrawals />} />
+          <Route path="bank" element={<BankAccount />} />
+          <Route path="bank/add" element={<AddBankTransaction />} />
+          <Route path="audit" element={<AuditTrail />} />
+          <Route path="import" element={<DataImport />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
+}
