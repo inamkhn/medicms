@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useUIStore } from '@/stores';
 import { formatPKR, formatDate } from '@/lib/utils';
+import { getSubCourseDef } from '@/lib/constants';
 import { MOCK_DASHBOARD, getStudentsWithBalance } from '@/lib/mockData';
 import { useSyncStore } from '@/stores/syncStore';
 
@@ -166,7 +167,7 @@ export default function Dashboard() {
                   <div>
                     <div className="font-medium text-slate-900 text-sm">{s.name}</div>
                     <div className="text-xs text-slate-500 mt-0.5">
-                      SNO: {s.sno} · {s.program}
+                      SNO: {s.sno} · {getSubCourseDef(s.program).sub.label} · {getSubCourseDef(s.program).course.label}
                     </div>
                   </div>
                   <div className="text-amber-500 font-semibold text-sm">

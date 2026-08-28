@@ -16,17 +16,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { SEMESTER_OPTIONS } from '@/lib/constants';
-import { formatPKR, computeFeeTemplateTotal, getFeeWarnings } from '@/lib/utils';
+import { getSubCourseDef } from '@/lib/constants';
+import { formatPKR, computeFeeTemplateTotal, getFeeWarnings, getTermLabel } from '@/lib/utils';
 import { getStudentsWithBalance, MOCK_FEE_TEMPLATES } from '@/lib/mockData';
+import { useStudentStore } from '@/stores';
 import type { Semester } from '@/types';
 
 export default function AddFeeDemand() {
   const { sno } = useParams<{ sno: string }>();
   const navigate = useNavigate();
 
-  const student = getStudentsWithBalance().find(s => s.sno.toString() === sno);
-  const [semester, setSemester] = useState<Semester>('3rd');
+  const students = useStudentStore((s) => s.students);
+  const student = getStudentsWithBalance(students).find(s => s.sno.toString() === sno);
+
+  // Course system of the student's sub-course
+  const subDef = student ? getSubCourseDef(student.program) : null;
+  const termNoun = subDef
+    ? (subDef.course.system === 'annual' ? 'Year' : subDef.course.system === 'months' ? 'Term' : 'Semester')
+    : 'Semester';
+
+  const [semester, setSemester] = useState<Semester>(() => {
+    if (subDef && student && subDef.sub.terms.includes(student.semester)) return student.semester;
+    return subDef?.sub.terms[0] ?? '1st';
+  });
   const [session, setSession] = useState('2018');
   const [narration, setNarration] = useState('This is Next Promote Semester Fees');
   const [updateSemester, setUpdateSemester] = useState(true);
@@ -38,7 +50,7 @@ export default function AddFeeDemand() {
 
   // Find matching template
   const template = MOCK_FEE_TEMPLATES.find(
-    t => t.program === student.program && t.semester === semester
+    t => t.program === student.program && t.course === student.course && t.semester === semester
   );
 
   const total = template ? computeFeeTemplateTotal(template) : 0;
@@ -46,9 +58,9 @@ export default function AddFeeDemand() {
   // Collect warnings
   const warnings: string[] = [];
   if (template) {
-    const w1 = getFeeWarnings(semester, 'annualCharges', template.annualCharges);
-    const w2 = getFeeWarnings(semester, 'clinicalCharges', template.clinicalCharges);
-    const w3 = getFeeWarnings(semester, 'diplomaFee', template.diplomaFee);
+    const w1 = getFeeWarnings(semester, 'annualCharges', template.annualCharges, student.course);
+    const w2 = getFeeWarnings(semester, 'clinicalCharges', template.clinicalCharges, student.course);
+    const w3 = getFeeWarnings(semester, 'diplomaFee', template.diplomaFee, student.course);
     if (w1) warnings.push(w1);
     if (w2) warnings.push(w2);
     if (w3) warnings.push(w3);
@@ -71,27 +83,29 @@ export default function AddFeeDemand() {
         <div>
           <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Add Fee Demand</h1>
           <p className="text-sm text-slate-500 mt-1">
-            {student.name} ({student.program} · {student.batch} · SNO: {student.sno})
+            {student.name} ({subDef ? `${subDef.course.label} — ${subDef.sub.label}` : student.program} · {student.batch} · SNO: {student.sno})
           </p>
         </div>
       </div>
 
-      {/* Semester & Session */}
+      {/* Term & Session */}
       <Card>
         <CardHeader>
-          <CardTitle>Semester & Session</CardTitle>
+          <CardTitle>{termNoun} & Session</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label>Semester</Label>
+              <Label>{termNoun}</Label>
               <Select value={semester} onValueChange={(v) => setSemester(v as Semester)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SEMESTER_OPTIONS.map(s => (
-                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                  {subDef?.sub.terms.map(s => (
+                    <SelectItem key={s} value={s}>
+                      {subDef ? getTermLabel(subDef.course.system, s) : s}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -108,7 +122,7 @@ export default function AddFeeDemand() {
 
           {template && (
             <div className="text-sm text-blue-600 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-              Template loaded: {student.program} · {semester} Sem · {student.batch}
+              Template loaded: {subDef ? subDef.sub.label : student.program} · {subDef ? getTermLabel(subDef.course.system, semester) : semester} · {student.batch}
             </div>
           )}
         </CardContent>
@@ -138,7 +152,7 @@ export default function AddFeeDemand() {
                 <span>Annual Charges</span>
                 <div className="flex items-center gap-2">
                   <span>{formatPKR(template.annualCharges)}</span>
-                  {template.annualCharges > 0 && (
+                  {template.annualCharges > 0 && subDef?.course.system === 'semester' && (
                     <span className="text-xs text-blue-500">✓ Sem 3+</span>
                   )}
                 </div>
@@ -159,7 +173,7 @@ export default function AddFeeDemand() {
                 <span>Clinical Charges</span>
                 <div className="flex items-center gap-2">
                   <span>{formatPKR(template.clinicalCharges)}</span>
-                  {template.clinicalCharges > 0 && (
+                  {template.clinicalCharges > 0 && subDef?.course.system === 'semester' && (
                     <span className="text-xs text-blue-500">✓ Sem 3</span>
                   )}
                 </div>
@@ -172,7 +186,7 @@ export default function AddFeeDemand() {
             </div>
           ) : (
             <div className="text-center text-slate-400 py-6 text-sm">
-              No fee template found for {student.program} · {semester}
+              No fee template found for {subDef ? subDef.sub.label : student.program} · {semester}
             </div>
           )}
         </CardContent>
@@ -215,7 +229,7 @@ export default function AddFeeDemand() {
                   onChange={() => setUpdateSemester(true)}
                   className="accent-blue-500 w-4 h-4"
                 />
-                <span className="text-sm text-slate-700">Yes — update student's current semester to {semester}</span>
+                <span className="text-sm text-slate-700">Yes — update student's current {termNoun.toLowerCase()} to {semester}</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input

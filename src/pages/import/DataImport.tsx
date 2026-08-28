@@ -279,11 +279,11 @@ export default function DataImport() {
 
               {step.id === 'templates' && (
                 <div className="text-sm text-slate-600 space-y-2">
-                  <p>Import fee templates with program/semester fee structures.</p>
+                  <p>Import fee templates with course/sub-course and semester/year fee structures.</p>
                   <ul className="list-disc list-inside text-slate-500 space-y-1">
                     <li>All 8 fee components mapped correctly</li>
                     <li>Business rules validated (Annual Sem 3+, Clinical Sem 3, Diploma Sem 4)</li>
-                    <li>Duplicates detected by program+semester+batch</li>
+                    <li>Duplicates detected by course+program+semester+batch</li>
                   </ul>
                 </div>
               )}

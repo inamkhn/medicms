@@ -16,9 +16,10 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { formatPKR, formatDate, formatBalanceDisplay } from '@/lib/utils';
+import { getSubCourseDef } from '@/lib/constants';
 import { getStudentsWithBalance, MOCK_LEDGER } from '@/lib/mockData';
 import { canWrite } from '@/stores/authStore';
-import { useAuthStore } from '@/stores';
+import { useAuthStore, useStudentStore } from '@/stores';
 import type { TransactionType } from '@/types';
 
 const TYPE_COLORS: Record<TransactionType, string> = {
@@ -37,7 +38,8 @@ export default function StudentLedger() {
   const { user } = useAuthStore();
   const canEdit = canWrite(user?.role);
 
-  const allStudents = getStudentsWithBalance();
+  const students = useStudentStore((s) => s.students);
+  const allStudents = getStudentsWithBalance(students);
   const student = allStudents.find(s => s.sno.toString() === sno);
 
   if (!student) {
@@ -73,7 +75,7 @@ export default function StudentLedger() {
         <div className="flex-1">
           <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Fee Ledger</h1>
           <p className="text-sm text-slate-500 mt-1">
-            {student.name} (SNO: {student.sno}) · {student.program} · {student.batch} · Session: {student.session}
+            {student.name} (SNO: {student.sno}) · {getSubCourseDef(student.program).course.label} — {getSubCourseDef(student.program).sub.label} · {student.batch} · Session: {student.session}
           </p>
         </div>
         <Button variant="outline" size="sm">

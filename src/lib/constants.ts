@@ -2,20 +2,111 @@
 // MediCMS Desktop v4.0 - Constants
 // ============================================
 
-import type { ProgramCode, BatchName, Semester, ExpenseCategory } from '@/types';
+import type { ProgramCode, BatchName, Semester, ExpenseCategory, CourseCode } from '@/types';
 
-// --- Programs (display names corrected) ---
-export const PROGRAM_OPTIONS: { value: ProgramCode; label: string }[] = [
-  { value: 'Health', label: 'Health' },
-  { value: 'Surgical', label: 'Surgical' },
-  { value: 'Pharmacy', label: 'Pharmacy' },
-  { value: 'Radiology', label: 'Radiology' },
-  { value: 'Pathology', label: 'Pathology' },
-  { value: 'Cardiology', label: 'Cardiology' },
-  { value: 'Anaesthesia', label: 'Anaesthesia' },  // Corrected spelling
-  { value: 'Dental', label: 'Dental' },
-  { value: 'Dialysis', label: 'Dialysis' },
+// --- Courses & Sub-courses ---
+export interface SubCourseDef { value: ProgramCode; label: string; terms: Semester[]; }
+
+export interface CourseDef {
+  code: CourseCode;
+  label: string;
+  system: 'semester' | 'annual' | 'months';
+  durationLabel: string;
+  subCourses: SubCourseDef[];
+}
+
+const PARAMEDICS_TERMS: Semester[] = ['1st', '2nd', '3rd', '4th'];
+
+export const COURSES: CourseDef[] = [
+  {
+    code: 'Paramedics',
+    label: 'Paramedics',
+    system: 'semester',
+    durationLabel: '2 Years / 4 Semesters',
+    subCourses: [
+      { value: 'Health', label: 'Health', terms: PARAMEDICS_TERMS },
+      { value: 'Surgical', label: 'Surgical', terms: PARAMEDICS_TERMS },
+      { value: 'Anaesthesia', label: 'Anaesthesia', terms: PARAMEDICS_TERMS },
+      { value: 'Dental', label: 'Dental', terms: PARAMEDICS_TERMS },
+      { value: 'Radiology', label: 'Radiology', terms: PARAMEDICS_TERMS },
+      { value: 'Pathology', label: 'Pathology', terms: PARAMEDICS_TERMS },
+      { value: 'Cardiology', label: 'Cardiology', terms: PARAMEDICS_TERMS },
+      { value: 'Pharmacy', label: 'Pharmacy Tech', terms: PARAMEDICS_TERMS },
+      { value: 'Dialysis', label: 'Dialysis', terms: PARAMEDICS_TERMS },
+    ],
+  },
+  {
+    code: 'PharmacyB',
+    label: 'Pharmacy B (Category B)',
+    system: 'annual',
+    durationLabel: '2 Years / Annual',
+    subCourses: [
+      { value: 'PharmacyB', label: 'Pharmacy Cat-B', terms: ['1st', '2nd'] },
+    ],
+  },
+  {
+    code: 'PNC',
+    label: 'PNC (Pakistan Nursing Council)',
+    system: 'annual',
+    durationLabel: '2 Years Diploma / Annual',
+    subCourses: [
+      { value: 'LHV', label: 'LHV', terms: ['1st', '2nd'] },
+      { value: 'CMW', label: 'CMW', terms: ['1st', '2nd'] },
+      { value: 'CNA', label: 'CNA', terms: ['1st', '2nd'] },
+    ],
+  },
+  {
+    code: 'BSN',
+    label: 'BS Nursing',
+    system: 'semester',
+    durationLabel: '4 Years / 8 Semesters',
+    subCourses: [
+      { value: 'BSN', label: 'BS Nursing', terms: ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'] },
+    ],
+  },
+  {
+    code: 'DHMS',
+    label: 'Homeopathic Council',
+    system: 'annual',
+    durationLabel: 'DHMS 4 Years / Annual',
+    subCourses: [
+      { value: 'DHMS', label: 'DHMS', terms: ['1st', '2nd', '3rd', '4th'] },
+    ],
+  },
+  {
+    code: 'Ultrasound',
+    label: 'Ultrasound Course',
+    system: 'months',
+    durationLabel: '6 Months / 1 Year',
+    subCourses: [
+      { value: 'Ultrasound6M', label: 'Ultrasound 6 Months', terms: ['1st'] },
+      { value: 'Ultrasound1Y', label: 'Ultrasound 1 Year', terms: ['1st', '2nd'] },
+    ],
+  },
 ];
+
+// --- Derived program options (flattened from COURSES) ---
+export const PROGRAM_OPTIONS: { value: ProgramCode; label: string }[] = COURSES.flatMap(
+  (course) => course.subCourses.map((sub) => ({ value: sub.value, label: sub.label }))
+);
+
+// --- Course lookup helpers ---
+export function getCourseDef(code: CourseCode): CourseDef {
+  const course = COURSES.find((c) => c.code === code);
+  if (!course) throw new Error(`Unknown course: ${code}`);
+  return course;
+}
+
+export function getSubCourseDef(program: ProgramCode): { course: CourseDef; sub: SubCourseDef } {
+  const course = COURSES.find((c) => c.subCourses.some((s) => s.value === program));
+  if (!course) throw new Error(`Unknown program: ${program}`);
+  const sub = course.subCourses.find((s) => s.value === program)!;
+  return { course, sub };
+}
+
+export function getCourseOfProgram(program: ProgramCode): CourseCode {
+  return getSubCourseDef(program).course.code;
+}
 
 // --- Batches ---
 export const BATCH_OPTIONS: BatchName[] = [
@@ -25,8 +116,8 @@ export const BATCH_OPTIONS: BatchName[] = [
   '16th Batch', '17th Batch',
 ];
 
-// --- Semesters ---
-export const SEMESTER_OPTIONS: Semester[] = ['1st', '2nd', '3rd', '4th'];
+// --- Semesters / Terms ---
+export const SEMESTER_OPTIONS: Semester[] = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
 
 // --- Sessions (years) ---
 export const SESSION_OPTIONS = Array.from(

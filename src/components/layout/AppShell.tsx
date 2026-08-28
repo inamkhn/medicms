@@ -9,14 +9,12 @@ import { Header } from './Header';
 import { StatusBar } from './StatusBar';
 import { OfflineBanner } from '@/components/shared/OfflineBanner';
 import { GlobalSearch } from '@/components/shared/GlobalSearch';
-import { StudentDrawer } from '@/components/shared/StudentDrawer';
 import { useSyncStore, useUIStore } from '@/stores';
 
 // Global keyboard shortcuts (inside Router context so useNavigate works)
 function useGlobalShortcuts() {
   const openSearch = useUIStore((s) => s.openSearch);
   const { setSyncing, syncComplete } = useSyncStore();
-  const { closeDrawer, drawerOpen } = useUIStore();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -25,14 +23,6 @@ function useGlobalShortcuts() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-      // Esc - Close drawer / overlay
-      if (e.key === 'Escape') {
-        if (drawerOpen) {
-          e.preventDefault();
-          closeDrawer();
-          return;
-        }
-      }
       // F3 - Global search
       if (e.key === 'F3') {
         e.preventDefault();
@@ -68,36 +58,31 @@ function useGlobalShortcuts() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [openSearch, setSyncing, syncComplete, navigate, closeDrawer, drawerOpen]);
+  }, [openSearch, setSyncing, syncComplete, navigate]);
 }
 
 export function AppShell() {
   useGlobalShortcuts();
   const syncStatus = useSyncStore((s) => s.status);
-  const { searchOpen, drawerOpen, drawerStudent, closeDrawer, closeSearch } = useUIStore();
+  const { searchOpen, closeSearch } = useUIStore();
   const isOffline = syncStatus === 'offline';
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-slate-50/50">
-      <Header />
+    <div className="flex flex-col h-screen overflow-hidden bg-slate-50/50 print:h-auto print:overflow-visible">
+      <div className="print:hidden"><Header /></div>
       {isOffline && <OfflineBanner />}
       
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-y-auto p-8">
+      <div className="flex flex-1 overflow-hidden print:block">
+        <div className="print:hidden flex"><Sidebar /></div>
+        <main className="flex-1 overflow-y-auto p-8 print:p-0 print:overflow-visible">
           <Outlet />
         </main>
       </div>
       
-      <StatusBar />
+      <div className="print:hidden"><StatusBar /></div>
       
       {/* Global Search Overlay */}
       {searchOpen && <GlobalSearch onClose={closeSearch} />}
-      
-      {/* Student Drawer */}
-      {drawerOpen && drawerStudent && (
-        <StudentDrawer student={drawerStudent} onClose={closeDrawer} />
-      )}
     </div>
   );
 }

@@ -22,19 +22,19 @@ const REPORT_CATEGORIES: ReportCategory[] = [
   {
     title: 'Fee Reports',
     reports: [
-      { name: 'Active Fee Defaulters', description: 'Balance > 0, Struck_Off = No', filters: ['program', 'batch', 'minDues'] },
-      { name: 'Struck Off Students with Dues', description: 'Separate from active defaulters — for collection follow-up', filters: ['program', 'batch'] },
+      { name: 'Active Fee Defaulters', description: 'Balance > 0, Struck_Off = No', filters: ['course', 'program', 'batch', 'minDues'] },
+      { name: 'Struck Off Students with Dues', description: 'Separate from active defaulters — for collection follow-up', filters: ['course', 'program', 'batch'] },
       { name: 'Students with Credit Balance', description: 'Computed balance < 0 — may owe refunds' },
       { name: 'Student Full Fee Statement', description: 'Complete transaction history for one student', filters: ['student'] },
-      { name: 'Program-wise Collection Summary', description: 'Total demanded vs collected vs outstanding per program', filters: ['program', 'batch', 'dateRange'] },
+      { name: 'Program-wise Collection Summary', description: 'Total demanded vs collected vs outstanding per course/sub-course', filters: ['course', 'program', 'batch', 'dateRange'] },
       { name: 'Discount Summary', description: 'All discount entries — who gave, how much, why', filters: ['dateRange', 'givenBy'] },
     ],
   },
   {
     title: 'Student Reports',
     reports: [
-      { name: 'Student List (Program-wise)', description: 'All students filtered by program and batch', filters: ['program', 'batch', 'status'] },
-      { name: 'Struck Off Students', description: 'Includes SNO, Name, Date, Reason, Dues at time', filters: ['program', 'batch', 'reason'] },
+      { name: 'Student List (Program-wise)', description: 'All students filtered by course/sub-course and batch', filters: ['course', 'program', 'batch', 'status'] },
+      { name: 'Struck Off Students', description: 'Includes SNO, Name, Date, Reason, Dues at time', filters: ['course', 'program', 'batch', 'reason'] },
       { name: 'Admission Register', description: 'All students enrolled in a date range', filters: ['dateRange'] },
     ],
   },

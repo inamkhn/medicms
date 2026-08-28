@@ -5,3 +5,4 @@
 export { useAuthStore, hasPermission, canWrite } from './authStore';
 export { useSyncStore, getSyncIndicator } from './syncStore';
 export { useUIStore } from './uiStore';
+export { useStudentStore } from './studentStore';

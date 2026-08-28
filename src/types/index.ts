@@ -13,14 +13,26 @@ export interface User {
   role: UserRole;
 }
 
-// --- Programs ---
-export type ProgramCode = 
-  | 'Health' | 'Surgical' | 'Pharmacy' | 'Radiology' 
-  | 'Pathology' | 'Cardiology' | 'Anaesthesia' | 'Dental' | 'Dialysis';
+// --- Programs & Courses ---
+export type CourseCode = 'Paramedics' | 'PharmacyB' | 'PNC' | 'BSN' | 'DHMS' | 'Ultrasound';
+
+export type ProgramCode =
+  // Paramedics sub-courses
+  | 'Health' | 'Surgical' | 'Pharmacy' | 'Radiology'
+  | 'Pathology' | 'Cardiology' | 'Anaesthesia' | 'Dental' | 'Dialysis'
+  // PNC sub-courses
+  | 'LHV' | 'CMW' | 'CNA'
+  // Standalone courses (sub-course = the course itself)
+  | 'PharmacyB' | 'BSN' | 'DHMS'
+  // Ultrasound sub-courses
+  | 'Ultrasound6M' | 'Ultrasound1Y';
 
 export const PROGRAMS: ProgramCode[] = [
   'Health', 'Surgical', 'Pharmacy', 'Radiology',
-  'Pathology', 'Cardiology', 'Anaesthesia', 'Dental', 'Dialysis'
+  'Pathology', 'Cardiology', 'Anaesthesia', 'Dental', 'Dialysis',
+  'LHV', 'CMW', 'CNA',
+  'PharmacyB', 'BSN', 'DHMS',
+  'Ultrasound6M', 'Ultrasound1Y',
 ];
 
 // --- Batch & Session ---
@@ -30,7 +42,7 @@ export type BatchName =
   | '11th Batch' | '12th Batch' | '13th Batch' | '14th Batch' | '15th Batch'
   | '16th Batch' | '17th Batch';
 
-export type Semester = '1st' | '2nd' | '3rd' | '4th';
+export type Semester = '1st' | '2nd' | '3rd' | '4th' | '5th' | '6th' | '7th' | '8th';
 
 // --- Student ---
 export interface Student {
@@ -41,7 +53,8 @@ export interface Student {
   address: string | null;
   cnic: string | null;            // NULL if not entered (never "nil"/"n/a")
   regDate: string;                // ISO date
-  program: ProgramCode;
+  course: CourseCode;             // Parent course (e.g. Paramedics, PNC)
+  program: ProgramCode;           // Sub-course (e.g. Health, LHV)
   batch: BatchName;
   session: number;                // Year e.g. 2017
   semester: Semester;             // Current semester (derived from ledger)
@@ -55,7 +68,8 @@ export interface Student {
 // --- Fee Template ---
 export interface FeeTemplate {
   id: string;
-  program: ProgramCode;
+  course: CourseCode;             // Parent course
+  program: ProgramCode;           // Sub-course
   semester: Semester;
   batch: BatchName;
   session: number;

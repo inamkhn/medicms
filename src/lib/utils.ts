@@ -5,7 +5,8 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format } from 'date-fns';
-import type { StudentBadgeType, BalanceState } from '@/types';
+import type { StudentBadgeType, BalanceState, CourseCode } from '@/types';
+import { getCourseDef } from '@/lib/constants';
 
 // --- Class name utility ---
 export function cn(...inputs: ClassValue[]) {
@@ -86,6 +87,13 @@ export function getSemesterLabel(semester: string): string {
   return `${semester} Semester`;
 }
 
+// --- Term label (per course system) ---
+export function getTermLabel(system: 'semester' | 'annual' | 'months', term: string): string {
+  if (system === 'annual') return `${term} Year`;
+  if (system === 'months') return `${term} Term`;
+  return `${term} Semester`;
+}
+
 // --- Batch to Session mapping (approximate) ---
 export function batchToSession(batch: string): number {
   const match = batch.match(/^(\d+)/);
@@ -125,8 +133,10 @@ export function computeFeeTemplateTotal(template: {
 }
 
 // --- Fee semester warnings ---
-export function getFeeWarnings(semester: string, feeType: string, amount: number): string | null {
+export function getFeeWarnings(semester: string, feeType: string, amount: number, course?: CourseCode): string | null {
   if (amount === 0) return null;
+  // Paramedics business rules only apply to semester-system courses
+  if (course && getCourseDef(course).system !== 'semester') return null;
   
   const semNum = parseInt(semester, 10);
   

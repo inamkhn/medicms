@@ -16,15 +16,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { SEMESTER_OPTIONS } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getSubCourseDef } from '@/lib/constants';
+import { getStudentsWithBalance, MOCK_LEDGER } from '@/lib/mockData';
+import { getTermLabel, formatCNIC } from '@/lib/utils';
+import { useStudentStore } from '@/stores';
 import type { Semester } from '@/types';
 
 export default function EditStudent() {
   const navigate = useNavigate();
   const { sno } = useParams<{ sno: string }>();
 
-  const allStudents = getStudentsWithBalance();
+  const students = useStudentStore((s) => s.students);
+  const updateStudent = useStudentStore((s) => s.updateStudent);
+  const allStudents = getStudentsWithBalance(students);
   const student = allStudents.find(s => s.sno.toString() === sno);
 
   const [formData, setFormData] = useState({
@@ -36,7 +40,6 @@ export default function EditStudent() {
     semester: student?.semester ?? '1st',
   });
   const [reason, setReason] = useState('');
-  const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
 
   if (!student) {
@@ -47,20 +50,53 @@ export default function EditStudent() {
     );
   }
 
-  const handleSave = async () => {
-    if (!reason.trim()) return;
-    setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
-    setLoading(false);
+  const subDef = getSubCourseDef(student.program);
+  const termNoun = subDef.course.system === 'annual' ? 'Year' : subDef.course.system === 'months' ? 'Term' : 'Semester';
+
+  // Derived semester: max Demand semester in the ledger for this student
+  const demandSemesters = MOCK_LEDGER
+    .filter(t => t.studentSno === student.sno && t.type === 'Demand' && t.semester)
+    .map(t => t.semester as Semester);
+  const derivedSemester: Semester = demandSemesters.length > 0
+    ? demandSemesters.reduce((max, s) => (parseInt(s, 10) > parseInt(max, 10) ? s : max))
+    : student.semester;
+
+  // Dirty detection: compare the form against the stored student
+  const isDirty =
+    formData.name !== student.name ||
+    formData.fatherName !== student.fatherName ||
+    formData.contact !== (student.contact ?? '') ||
+    formData.cnic !== (student.cnic ?? '') ||
+    formData.address !== (student.address ?? '') ||
+    formData.semester !== student.semester;
+
+  const nameFilled = formData.name.trim() !== '' && formData.fatherName.trim() !== '';
+  const canSave = isDirty && nameFilled && reason.trim() !== '';
+
+  const handleSave = () => {
+    if (!canSave) return;
+    updateStudent(student.sno, {
+      name: formData.name.trim(),
+      fatherName: formData.fatherName.trim(),
+      contact: formData.contact.trim() || null,
+      cnic: formData.cnic.trim() || null,
+      address: formData.address.trim() || null,
+      semester: formData.semester,
+    });
     setSaved(true);
     setTimeout(() => navigate(-1), 1500);
+  };
+
+  const handleCancel = () => {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
+    navigate(-1);
   };
 
   return (
     <div className="w-auto space-y-8">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+        <Button variant="ghost" size="icon" onClick={handleCancel}>
           <ArrowLeft size={20} />
         </Button>
         <div>
@@ -119,7 +155,7 @@ export default function EditStudent() {
               id="cnic"
               value={formData.cnic}
               onChange={(e) => setFormData({ ...formData, cnic: e.target.value })}
-              placeholder="Currently: Not entered"
+              placeholder={student.cnic ? `Currently: ${formatCNIC(student.cnic)}` : 'Currently: Not entered'}
             />
           </div>
           <div>
@@ -148,7 +184,9 @@ export default function EditStudent() {
           <div className="grid grid-cols-3 gap-4 text-sm">
             <div>
               <span className="text-slate-500">Program</span>
-              <div className="font-medium text-slate-900">{student.program}</div>
+              <div className="font-medium text-slate-900">
+                {subDef.course.label} — {subDef.sub.label}
+              </div>
             </div>
             <div>
               <span className="text-slate-500">Batch</span>
@@ -162,21 +200,24 @@ export default function EditStudent() {
         </CardContent>
       </Card>
 
-      {/* Semester Update */}
+      {/* Semester / Year / Term Update */}
       <Card>
         <CardHeader>
-          <CardTitle>Semester</CardTitle>
+          <CardTitle>{termNoun}</CardTitle>
           <CardDescription>Update for correction only</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-slate-500">Current stored semester</span>
-              <div>{student.semester}</div>
+              <span className="text-slate-500">Current stored {termNoun.toLowerCase()}</span>
+              <div>{getTermLabel(subDef.course.system, student.semester)}</div>
             </div>
             <div>
               <span className="text-slate-500">Derived from ledger</span>
-              <div className="text-blue-500 font-medium">3rd — recommended</div>
+              <div className="text-blue-500 font-medium">
+                {getTermLabel(subDef.course.system, derivedSemester)}
+                {derivedSemester !== student.semester && ' — recommended'}
+              </div>
             </div>
           </div>
           <div>
@@ -189,8 +230,10 @@ export default function EditStudent() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {SEMESTER_OPTIONS.map((s) => (
-                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                {subDef.sub.terms.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {getTermLabel(subDef.course.system, t)}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -216,16 +259,21 @@ export default function EditStudent() {
       </Card>
 
       {/* Actions */}
-      <div className="flex justify-between">
-        <Button variant="outline" onClick={() => navigate(-1)}>
+      <div className="flex items-center justify-between">
+        <Button variant="outline" onClick={handleCancel}>
           Cancel
         </Button>
-        <Button
-          onClick={handleSave}
-          disabled={loading || !reason.trim()}
-        >
-          {loading ? 'Saving...' : 'Save Changes'}
-        </Button>
+        <div className="flex items-center gap-3">
+          {!isDirty && !saved && (
+            <span className="text-xs text-slate-400">No changes detected yet</span>
+          )}
+          <Button
+            onClick={handleSave}
+            disabled={!canSave || saved}
+          >
+            {saved ? 'Saved' : 'Save Changes'}
+          </Button>
+        </div>
       </div>
     </div>
   );

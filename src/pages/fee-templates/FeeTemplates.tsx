@@ -23,20 +23,26 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { PROGRAM_OPTIONS, SEMESTER_OPTIONS, BATCH_OPTIONS, SESSION_OPTIONS } from '@/lib/constants';
-import { formatPKR, computeFeeTemplateTotal, getFeeWarnings } from '@/lib/utils';
+import { COURSES, SEMESTER_OPTIONS, BATCH_OPTIONS, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
+import { formatPKR, computeFeeTemplateTotal, getFeeWarnings, getTermLabel } from '@/lib/utils';
 import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
-import type { FeeTemplate, ProgramCode, Semester, BatchName } from '@/types';
+import type { FeeTemplate, ProgramCode, Semester, BatchName, CourseCode } from '@/types';
 
 type View = 'list' | 'edit';
 
 export default function FeeTemplates() {
   const [view, setView] = useState<View>('list');
   const [editingTemplate, setEditingTemplate] = useState<FeeTemplate | null>(null);
+  const [courseFilter, setCourseFilter] = useState<string>('all');
   const [programFilter, setProgramFilter] = useState<string>('all');
   const [semesterFilter, setSemesterFilter] = useState<string>('all');
 
+  const filterProgramOptions = courseFilter === 'all'
+    ? COURSES.flatMap(c => c.subCourses)
+    : getCourseDef(courseFilter as CourseCode).subCourses;
+
   const filteredTemplates = MOCK_FEE_TEMPLATES.filter(t => {
+    if (courseFilter !== 'all' && t.course !== courseFilter) return false;
     if (programFilter !== 'all' && t.program !== programFilter) return false;
     if (semesterFilter !== 'all' && t.semester !== semesterFilter) return false;
     return true;
@@ -68,7 +74,7 @@ export default function FeeTemplates() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Fee Templates</h1>
           <p className="text-sm text-slate-500">
-            Define default fee amounts per program, semester, session, and batch
+            Define default fee amounts per course, sub-course, term, session, and batch
           </p>
         </div>
         <Button onClick={handleAdd}>
@@ -79,14 +85,26 @@ export default function FeeTemplates() {
 
       {/* Filters */}
       <div className="flex gap-3">
-        <Select value={programFilter} onValueChange={setProgramFilter}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="All Programs" />
+        <Select value={courseFilter} onValueChange={(v) => { setCourseFilter(v); setProgramFilter('all'); }}>
+          <SelectTrigger className="w-[200px]">
+            <SelectValue placeholder="All Courses" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Programs</SelectItem>
-            {PROGRAM_OPTIONS.map(p => (
-              <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+            <SelectItem value="all">All Courses</SelectItem>
+            {COURSES.map(c => (
+              <SelectItem key={c.code} value={c.code}>{c.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={programFilter} onValueChange={setProgramFilter}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="All Sub-courses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Sub-courses</SelectItem>
+            {filterProgramOptions.map(s => (
+              <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -109,6 +127,7 @@ export default function FeeTemplates() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead>Course</TableHead>
               <TableHead>Program</TableHead>
               <TableHead>Sem</TableHead>
               <TableHead>Session</TableHead>
@@ -121,7 +140,8 @@ export default function FeeTemplates() {
           <TableBody>
             {filteredTemplates.map(template => (
               <TableRow key={template.id} className="cursor-pointer hover:bg-slate-50" onClick={() => handleEdit(template)}>
-                <TableCell className="font-medium">{template.program}</TableCell>
+                <TableCell>{getSubCourseDef(template.program).course.label}</TableCell>
+                <TableCell className="font-medium">{getSubCourseDef(template.program).sub.label}</TableCell>
                 <TableCell>{template.semester}</TableCell>
                 <TableCell>{template.session}</TableCell>
                 <TableCell className="text-right">{formatPKR(template.admissionFee)}</TableCell>
@@ -138,7 +158,7 @@ export default function FeeTemplates() {
             ))}
             {filteredTemplates.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-slate-500">
+                <TableCell colSpan={8} className="text-center py-8 text-slate-500">
                   No templates found
                 </TableCell>
               </TableRow>
@@ -164,6 +184,7 @@ export default function FeeTemplates() {
 // --- Fee Template Editor ---
 function FeeTemplateEditor({ template, onBack }: { template: FeeTemplate | null; onBack: () => void }) {
   const [form, setForm] = useState({
+    course: (template?.course ?? '') as CourseCode | '',
     program: (template?.program ?? '') as ProgramCode | '',
     semester: (template?.semester ?? '1st') as Semester,
     batch: (template?.batch ?? '17th Batch') as BatchName,
@@ -179,15 +200,19 @@ function FeeTemplateEditor({ template, onBack }: { template: FeeTemplate | null;
   });
   const [loading, setLoading] = useState(false);
 
+  // Derived course / sub-course definitions
+  const courseDef = form.course ? getCourseDef(form.course) : null;
+  const subCourseDef = form.program ? getSubCourseDef(form.program).sub : null;
+
   const total = form.admissionFee + form.tuitionFee + form.idCardFee +
     form.annualCharges + form.securityFee + form.enrollmentFee +
     form.diplomaFee + form.clinicalCharges;
 
   // Collect warnings
   const warnings: string[] = [];
-  const w1 = getFeeWarnings(form.semester, 'annualCharges', form.annualCharges);
-  const w2 = getFeeWarnings(form.semester, 'clinicalCharges', form.clinicalCharges);
-  const w3 = getFeeWarnings(form.semester, 'diplomaFee', form.diplomaFee);
+  const w1 = getFeeWarnings(form.semester, 'annualCharges', form.annualCharges, form.course || undefined);
+  const w2 = getFeeWarnings(form.semester, 'clinicalCharges', form.clinicalCharges, form.course || undefined);
+  const w3 = getFeeWarnings(form.semester, 'diplomaFee', form.diplomaFee, form.course || undefined);
   if (w1) warnings.push(w1);
   if (w2) warnings.push(w2);
   if (w3) warnings.push(w3);
@@ -215,22 +240,52 @@ function FeeTemplateEditor({ template, onBack }: { template: FeeTemplate | null;
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label>Program</Label>
-              <Select value={form.program} onValueChange={(v) => setForm({ ...form, program: v as ProgramCode })}>
+              <Label>Course</Label>
+              <Select
+                value={form.course}
+                onValueChange={(v) => {
+                  const def = getCourseDef(v as CourseCode);
+                  const sub = def.subCourses.length === 1 ? def.subCourses[0].value : '';
+                  setForm({ ...form, course: v as CourseCode, program: sub, semester: '1st' });
+                }}
+              >
                 <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>
-                  {PROGRAM_OPTIONS.map(p => (
-                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                  {COURSES.map(c => (
+                    <SelectItem key={c.code} value={c.code}>{c.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label>Semester</Label>
-              <Select value={form.semester} onValueChange={(v) => setForm({ ...form, semester: v as Semester })}>
+              <Label>Sub-course</Label>
+              <Select
+                value={form.program}
+                onValueChange={(v) => setForm({ ...form, program: v as ProgramCode, semester: '1st' })}
+                disabled={!form.course}
+              >
+                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                <SelectContent>
+                  {courseDef?.subCourses.map(s => (
+                    <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Semester / Year / Term</Label>
+              <Select
+                value={form.semester}
+                onValueChange={(v) => setForm({ ...form, semester: v as Semester })}
+                disabled={!subCourseDef}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {SEMESTER_OPTIONS.map(s => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
+                  {subCourseDef?.terms.map(s => (
+                    <SelectItem key={s} value={s}>
+                      {courseDef ? getTermLabel(courseDef.system, s) : s}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -308,7 +363,7 @@ function FeeTemplateEditor({ template, onBack }: { template: FeeTemplate | null;
 
       <div className="flex justify-between">
         <Button variant="outline" onClick={onBack}>Cancel</Button>
-        <Button onClick={handleSave} disabled={loading || !form.program}>
+        <Button onClick={handleSave} disabled={loading || !form.course || !form.program}>
           {loading ? 'Saving...' : '💾 Save Template'}
         </Button>
       </div>

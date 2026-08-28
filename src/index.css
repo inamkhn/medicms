@@ -63,3 +63,14 @@ body {
   -webkit-backdrop-filter: blur(12px) saturate(150%);
   border: 1px solid rgb(148 163 184 / 0.08);
 }
+
+/* --- Print: page content only (Sidebar, Header, StatusBar are print:hidden) --- */
+@media print {
+  body {
+    background: white;
+  }
+  main {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+}

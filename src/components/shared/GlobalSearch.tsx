@@ -6,8 +6,9 @@ import { useState, useEffect, useRef } from 'react';
 import { Search, X, User, Receipt } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn, formatDate } from '@/lib/utils';
+import { getSubCourseDef } from '@/lib/constants';
 import { getStudentsWithBalance, MOCK_LEDGER } from '@/lib/mockData';
-import { useUIStore } from '@/stores';
+import { useStudentStore } from '@/stores';
 
 interface SearchResult {
   type: 'student' | 'receipt';
@@ -24,6 +25,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const storeStudents = useStudentStore((s) => s.students);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -36,7 +38,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
     }
 
     const q = query.toLowerCase();
-    const students = getStudentsWithBalance().filter(s => 
+    const students = getStudentsWithBalance(storeStudents).filter(s => 
       !s.isTestRecord && (
         s.name.toLowerCase().includes(q) ||
         s.sno.toString().includes(q) ||
@@ -53,7 +55,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
       type: 'student',
       id: s.sno.toString(),
       title: `${s.name} (SNO:${s.sno})`,
-      subtitle: `${s.program} · ${s.batch}`,
+      subtitle: `${getSubCourseDef(s.program).sub.label} · ${getSubCourseDef(s.program).course.label} · ${s.batch}`,
       badge: s.computedBalance > 0 ? `PKR ${s.computedBalance}` : 'Cleared',
       badgeColor: s.computedBalance > 0 ? 'text-amber-500' : 'text-emerald-500',
     }));
@@ -67,7 +69,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
 
     setResults([...studentResults, ...receiptResults]);
     setSelectedIndex(0);
-  }, [query]);
+  }, [query, storeStudents]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -85,10 +87,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
 
   const handleSelect = (result: SearchResult) => {
     if (result.type === 'student') {
-      const student = getStudentsWithBalance().find(s => s.sno.toString() === result.id);
-      if (student) {
-        useUIStore.getState().openDrawer(student);
-      }
+      navigate(`/students/${result.id}`);
     } else if (result.type === 'receipt') {
       navigate('/payments/reprint');
     }

@@ -12,8 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
 import { getStudentsWithBalance } from '@/lib/mockData';
-import { useAuthStore } from '@/stores';
-import { FEE_RULES } from '@/lib/constants';
+import { useAuthStore, useStudentStore } from '@/stores';
+import { FEE_RULES, getSubCourseDef } from '@/lib/constants';
 import type { StudentWithBalance } from '@/types';
 
 type Step = 'search' | 'confirm' | 'payment' | 'success';
@@ -34,7 +34,11 @@ export default function RecordPayment() {
   const [narration, setNarration] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const students = useMemo(() => getStudentsWithBalance().filter(s => !s.isTestRecord && !s.struckOff), []);
+  const storeStudents = useStudentStore((s) => s.students);
+  const students = useMemo(
+    () => getStudentsWithBalance(storeStudents).filter(s => !s.isTestRecord && !s.struckOff),
+    [storeStudents]
+  );
 
   const searchResults = search.length >= 2
     ? students.filter(s =>
@@ -120,7 +124,7 @@ export default function RecordPayment() {
                       <div>
                         <div className="font-medium">{student.name} (SNO: {student.sno})</div>
                         <div className="text-sm text-slate-500">
-                          {student.program} · {student.batch}
+                          {getSubCourseDef(student.program).sub.label} · {getSubCourseDef(student.program).course.label} · {student.batch}
                         </div>
                       </div>
                       <span className={balanceDisplay.color}>
@@ -146,7 +150,7 @@ export default function RecordPayment() {
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div><span className="text-slate-500">Name:</span> <strong>{selectedStudent.name}</strong></div>
                 <div><span className="text-slate-500">SNO:</span> {selectedStudent.sno}</div>
-                <div><span className="text-slate-500">Program:</span> {selectedStudent.program}</div>
+                <div><span className="text-slate-500">Program:</span> {getSubCourseDef(selectedStudent.program).course.label} — {getSubCourseDef(selectedStudent.program).sub.label}</div>
                 <div><span className="text-slate-500">Batch:</span> {selectedStudent.batch}</div>
                 <div><span className="text-slate-500">Father:</span> {selectedStudent.fatherName}</div>
                 <div><span className="text-slate-500">Contact:</span> {selectedStudent.contact || 'N/A'}</div>

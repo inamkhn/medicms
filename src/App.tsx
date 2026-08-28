@@ -7,6 +7,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import StudentList from '@/pages/students/StudentList';
+import StudentProfile from '@/pages/students/StudentProfile';
 import NewAdmission from '@/pages/students/NewAdmission';
 import RecordPayment from '@/pages/payments/RecordPayment';
 import ReprintReceipt from '@/pages/payments/ReprintReceipt';
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="payments/reprint" element={<ReprintReceipt />} />
           <Route path="reports" element={<Reports />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="students/:sno" element={<StudentProfile />} />
           <Route path="students/:sno/edit" element={<EditStudent />} />
           <Route path="ledger/:sno" element={<StudentLedger />} />
           <Route path="ledger/:sno/add-demand" element={<AddFeeDemand />} />
