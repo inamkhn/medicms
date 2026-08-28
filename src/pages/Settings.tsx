@@ -9,11 +9,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useSyncStore } from '@/stores/syncStore';
+import { useSettingsStore } from '@/stores';
 import { formatDateTime } from '@/lib/utils';
 import { BANK_INFO, INSTITUTE_INFO } from '@/lib/constants';
 
 export default function Settings() {
   const { status, lastSync, pendingCount, setSyncing, syncComplete } = useSyncStore();
+  const { showTestRecords, setShowTestRecords } = useSettingsStore();
   const [instituteName, setInstituteName] = useState(INSTITUTE_INFO.name);
   const [instituteAddress, setInstituteAddress] = useState(INSTITUTE_INFO.location);
   const [institutePhone, setInstitutePhone] = useState(INSTITUTE_INFO.phone);
@@ -232,7 +234,12 @@ export default function Settings() {
               <div className="font-medium">Show test records in lists</div>
               <div className="text-sm text-slate-500">Test entries like "Director Sb" SNO:146 hidden by default</div>
             </div>
-            <input type="checkbox" />
+            <input
+              type="checkbox"
+              checked={showTestRecords}
+              onChange={(e) => setShowTestRecords(e.target.checked)}
+              className="w-4 h-4 accent-blue-600"
+            />
           </div>
           
           <div className="flex items-center justify-between pt-4 border-t border-slate-100">

@@ -4,7 +4,9 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { ArrowLeft, AlertTriangle, CheckCircle2, Upload, X, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,26 +19,14 @@ import {
   SelectValue 
 } from '@/components/ui/select';
 import { COURSES, BATCH_OPTIONS, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
-import { formatPKR, computeFeeTemplateTotal, getTermLabel, isValidCNIC } from '@/lib/utils';
+import { formatPKR, computeFeeTemplateTotal, getTermLabel, normalizeCNIC, normalizeContact, isValidCNIC, isValidContact, batchToSession } from '@/lib/utils';
+import { admissionSchema, type AdmissionFormData } from '@/lib/schemas';
 import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
-import { useStudentStore } from '@/stores';
+import { useStudentStore, getNextSno } from '@/stores/studentStore';
+import { useAuditStore, useAuthStore } from '@/stores';
 import type { ProgramCode, BatchName, CourseCode, Semester, Student } from '@/types';
 
 type Step = 1 | 2 | 3;
-
-interface FormData {
-  name: string;
-  fatherName: string;
-  contact: string;
-  cnic: string;
-  address: string;
-  regDate: string;
-  course: CourseCode | '';
-  program: ProgramCode | '';
-  semester: Semester;
-  batch: BatchName | '';
-  session: number | '';
-}
 
 export default function NewAdmission() {
   const navigate = useNavigate();
@@ -45,20 +35,47 @@ export default function NewAdmission() {
 
   const students = useStudentStore((s) => s.students);
   const addStudent = useStudentStore((s) => s.addStudent);
-  
-  const [formData, setFormData] = useState<FormData>({
-    name: '',
-    fatherName: '',
-    contact: '',
-    cnic: '',
-    address: '',
-    regDate: new Date().toISOString().split('T')[0],
-    course: '',
-    program: '',
-    semester: '1st',
-    batch: '17th Batch',
-    session: 2026,
+
+  const form = useForm<AdmissionFormData>({
+    resolver: zodResolver(admissionSchema),
+    defaultValues: {
+      name: '',
+      fatherName: '',
+      contact: '',
+      cnic: '',
+      address: '',
+      regDate: new Date().toISOString().split('T')[0],
+      photoUrl: null,
+      dob: '',
+      gender: '',
+      domicile: '',
+      emergencyContact: '',
+      course: '',
+      program: '',
+      semester: '1st',
+      batch: '17th Batch',
+      session: 2026,
+    },
+    mode: 'onChange',
   });
+  const formData = form.watch() as AdmissionFormData & { course: CourseCode | ''; program: ProgramCode | ''; batch: BatchName | ''; session: number | '' };
+  const isDirty = form.formState.isDirty;
+
+  // Dirty guard — beforeunload + navigation confirm
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!isDirty || success) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty, success]);
+
+  const confirmIfDirty = () => {
+    if (!isDirty || success) return true;
+    return window.confirm('You have unsaved admission data. Discard and leave?');
+  };
 
   // Derived course / sub-course definitions
   const courseDef = formData.course ? getCourseDef(formData.course) : null;
@@ -73,61 +90,100 @@ export default function NewAdmission() {
 
   const totalFee = feeTemplate ? computeFeeTemplateTotal(feeTemplate) : 0;
 
-  // Next SNO that will be assigned by the store
-  const nextSno = Math.max(0, ...students.map((s) => s.sno)) + 1;
+  // Next SNO that will be assigned by the store (centralized helper)
+  const nextSno = getNextSno(students);
 
   // --- Validation ---
-  const cnicValid = formData.cnic.trim() === '' || isValidCNIC(formData.cnic);
-  const step1Valid = formData.name.trim() !== '' && formData.fatherName.trim() !== '' && cnicValid;
+  const normalizedCnic = normalizeCNIC(formData.cnic);
+  const cnicValid = normalizedCnic === null || isValidCNIC(normalizedCnic);
+  const contactValid = isValidContact(formData.contact);
+  const emergencyValid = isValidContact(formData.emergencyContact);
+  const dobValid = !formData.dob || new Date(formData.dob) <= new Date();
+  const step1Valid = formData.name.trim() !== '' && formData.fatherName.trim() !== '' && cnicValid && contactValid && emergencyValid && dobValid;
   const step2Valid = formData.course !== '' && formData.program !== '' && formData.batch !== '';
 
   // --- Real duplicate check against the store ---
   const nameQuery = formData.name.trim().toLowerCase();
-  const cnicQuery = formData.cnic.trim();
+  const cnicQuery = normalizeCNIC(formData.cnic);
   const duplicates = students.filter((s) => {
     if (s.isTestRecord) return false;
     if (nameQuery.length >= 3 && s.name.toLowerCase() === nameQuery) return true;
-    if (cnicQuery !== '' && isValidCNIC(cnicQuery) && s.cnic && s.cnic.replace(/\D/g, '') === cnicQuery.replace(/\D/g, '')) return true;
+    if (cnicQuery !== null && isValidCNIC(cnicQuery) && s.cnic && s.cnic.replace(/\D/g, '') === cnicQuery.replace(/\D/g, '')) return true;
     return false;
   });
 
-  const handleNext = () => {
-    if (step === 1 && step1Valid) setStep(2);
-    if (step === 2 && step2Valid) setStep(3);
+  const handleNext = async () => {
+    if (step === 1) {
+      const ok = await form.trigger(['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact']);
+      if (ok && step1Valid) setStep(2);
+    } else if (step === 2) {
+      const ok = await form.trigger(['course','program','batch','semester','session']);
+      if (ok && step2Valid) setStep(3);
+    }
   };
 
   const handleBack = () => {
     if (step > 1) setStep((step - 1) as Step);
   };
+  const handleCancel = () => {
+    if (!confirmIfDirty()) return;
+    navigate(-1);
+  };
 
   const handleCourseChange = (code: CourseCode) => {
     const def = getCourseDef(code);
-    // Auto-set sub-course when the course has a single one
     const sub = def.subCourses.length === 1 ? def.subCourses[0].value : '';
-    setFormData({ ...formData, course: code, program: sub, semester: '1st' });
+    form.setValue('course', code, { shouldValidate: true });
+    form.setValue('program', sub, { shouldValidate: true });
+    form.setValue('semester', '1st', { shouldValidate: true });
   };
 
   const handleProgramChange = (program: ProgramCode) => {
-    setFormData({ ...formData, program, semester: '1st' });
+    form.setValue('program', program, { shouldValidate: true });
+    form.setValue('semester', '1st', { shouldValidate: true });
   };
 
-  const handleSubmit = () => {
-    if (formData.course === '' || formData.program === '' || formData.batch === '') return;
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Photo must be under 2MB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => form.setValue('photoUrl', reader.result as string, { shouldDirty: true });
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmit = form.handleSubmit((data) => {
     const created = addStudent({
-      name: formData.name.trim(),
-      fatherName: formData.fatherName.trim(),
-      contact: formData.contact.trim() || null,
-      address: formData.address.trim() || null,
-      cnic: formData.cnic.trim() || null,
-      regDate: formData.regDate,
-      course: formData.course,
-      program: formData.program,
-      semester: formData.semester,
-      batch: formData.batch,
-      session: typeof formData.session === 'number' ? formData.session : 2026,
+      name: data.name.trim(),
+      fatherName: data.fatherName.trim(),
+      contact: normalizeContact(data.contact),
+      address: data.address?.trim() || null,
+      cnic: normalizeCNIC(data.cnic),
+      regDate: data.regDate,
+      photoUrl: data.photoUrl ?? null,
+      dob: data.dob || null,
+      gender: (data.gender as any) || null,
+      domicile: data.domicile?.trim() || null,
+      emergencyContact: normalizeContact(data.emergencyContact),
+      course: data.course as CourseCode,
+      program: data.program as ProgramCode,
+      semester: data.semester as Semester,
+      batch: data.batch as BatchName,
+      session: typeof data.session === 'number' ? data.session : parseInt(String(data.session),10) || 2026,
+    });
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    useAuditStore.getState().addLog({
+      user: userName,
+      action: 'New Admission',
+      studentSno: created.sno,
+      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch}`,
     });
     setSuccess(created);
-  };
+  });
 
   // Auto-redirect from the success screen
   useEffect(() => {
@@ -161,7 +217,7 @@ export default function NewAdmission() {
           </div>
           <p className="text-xs text-slate-400 mt-3">Redirecting to Students…</p>
           <div className="flex justify-center gap-3 mt-6">
-            <Button variant="outline" onClick={() => { setSuccess(null); setStep(1); setFormData({ ...formData, name: '', fatherName: '', contact: '', cnic: '', address: '', course: '', program: '', semester: '1st' }); }}>
+            <Button variant="outline" onClick={() => { setSuccess(null); setStep(1); form.reset(); }}>
               New Admission
             </Button>
             <Button onClick={() => navigate('/students')}>
@@ -177,7 +233,7 @@ export default function NewAdmission() {
     <form onSubmit={handleFormSubmit} className="w-auto space-y-8">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" type="button" onClick={() => navigate(-1)}>
+        <Button variant="ghost" size="icon" type="button" onClick={handleCancel}>
           <ArrowLeft size={20} />
         </Button>
         <div>
@@ -198,7 +254,7 @@ export default function NewAdmission() {
         ))}
       </div>
 
-      {/* Step 1: Personal Info */}
+      {/* Step 1: Personal Info — Zod + RHF */}
       {step === 1 && (
         <Card>
           <CardHeader>
@@ -207,70 +263,109 @@ export default function NewAdmission() {
           <CardContent className="space-y-4">
             <div>
               <Label htmlFor="name">Full Name *</Label>
-              <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Enter full name"
-              />
+              <Input id="name" {...form.register('name')} placeholder="Enter full name" className={form.formState.errors.name ? 'border-red-300' : ''} />
+              {form.formState.errors.name && <p className="text-xs text-red-500 mt-1">{form.formState.errors.name.message}</p>}
             </div>
 
             <div>
               <Label htmlFor="fatherName">Father Name *</Label>
-              <Input
-                id="fatherName"
-                value={formData.fatherName}
-                onChange={(e) => setFormData({ ...formData, fatherName: e.target.value })}
-                placeholder="Enter father name"
-              />
+              <Input id="fatherName" {...form.register('fatherName')} placeholder="Enter father name" className={form.formState.errors.fatherName ? 'border-red-300' : ''} />
+              {form.formState.errors.fatherName && <p className="text-xs text-red-500 mt-1">{form.formState.errors.fatherName.message}</p>}
             </div>
 
             <div>
               <Label htmlFor="contact">Contact Number</Label>
-              <Input
-                id="contact"
-                value={formData.contact}
-                onChange={(e) => setFormData({ ...formData, contact: e.target.value })}
-                placeholder="+92..."
-              />
+              <Input id="contact" {...form.register('contact')} placeholder="03XX-XXXXXXX or +92..." className={form.formState.errors.contact ? 'border-red-300' : ''} />
+              {form.formState.errors.contact && <p className="text-xs text-red-500 mt-1">{form.formState.errors.contact.message}</p>}
             </div>
 
             <div>
               <Label htmlFor="cnic">CNIC / B-Form</Label>
-              <Input
-                id="cnic"
-                value={formData.cnic}
-                onChange={(e) => setFormData({ ...formData, cnic: e.target.value })}
-                placeholder="Optional — leave blank if not available"
-              />
-              {!cnicValid && (
-                <p className="text-xs text-red-500 mt-1">
-                  CNIC must be 13 digits (e.g. 15602-1234567-1)
-                </p>
+              <Input id="cnic" {...form.register('cnic')} placeholder="Optional — leave blank if not available" className={form.formState.errors.cnic ? 'border-red-300' : ''} />
+              {form.formState.errors.cnic && <p className="text-xs text-red-500 mt-1">{form.formState.errors.cnic.message}</p>}
+              {!form.formState.errors.cnic && formData.cnic && normalizeCNIC(formData.cnic) && (
+                <p className="text-xs text-slate-400 mt-1">Formatted: {normalizeCNIC(formData.cnic)!.replace(/\D/g, '').replace(/(\d{5})(\d{7})(\d{1})/, '$1-$2-$3')}</p>
               )}
-              <p className="text-xs text-slate-400 mt-1">
-                Do NOT type "nil" or "n/a" — leave blank instead
-              </p>
+              <p className="text-xs text-slate-400 mt-1">Do NOT type "nil" or "n/a" — leave blank instead</p>
             </div>
 
             <div>
               <Label htmlFor="address">Address</Label>
-              <Input
+              <textarea
                 id="address"
-                value={formData.address}
-                onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                placeholder="Enter address"
+                {...form.register('address')}
+                placeholder="House, Street, Village, Tehsil — e.g. Village Kokarai, Tehsil Kabal, Swat"
+                rows={3}
+                className="flex min-h-[80px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-100 focus-visible:border-blue-200"
               />
+              {form.formState.errors.address && <p className="text-xs text-red-500 mt-1">{form.formState.errors.address.message}</p>}
+              <p className="text-xs text-slate-400 mt-1">Full postal address — shown on ID card & reports</p>
             </div>
 
             <div>
               <Label htmlFor="regDate">Registration Date</Label>
-              <Input
-                id="regDate"
-                type="date"
-                value={formData.regDate}
-                onChange={(e) => setFormData({ ...formData, regDate: e.target.value })}
-              />
+              <Input id="regDate" type="date" {...form.register('regDate')} />
+              {form.formState.errors.regDate && <p className="text-xs text-red-500 mt-1">{form.formState.errors.regDate.message}</p>}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="dob">Date of Birth</Label>
+                <Input id="dob" type="date" {...form.register('dob')} max={new Date().toISOString().split('T')[0]} className={form.formState.errors.dob ? 'border-red-300' : ''} />
+                {form.formState.errors.dob && <p className="text-xs text-red-500 mt-1">{form.formState.errors.dob.message}</p>}
+              </div>
+              <div>
+                <Label>Gender</Label>
+                <Controller control={form.control} name="gender" render={({ field }) => (
+                  <Select value={field.value || ''} onValueChange={field.onChange}>
+                    <SelectTrigger><SelectValue placeholder="Select gender" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Male">Male</SelectItem>
+                      <SelectItem value="Female">Female</SelectItem>
+                      <SelectItem value="Other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )} />
+                {form.formState.errors.gender && <p className="text-xs text-red-500 mt-1">{form.formState.errors.gender.message}</p>}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="domicile">Domicile (District)</Label>
+                <Input id="domicile" {...form.register('domicile')} placeholder="e.g. Swat, Dir, Buner" />
+              </div>
+              <div>
+                <Label htmlFor="emergencyContact">Emergency Contact</Label>
+                <Input id="emergencyContact" {...form.register('emergencyContact')} placeholder="+92..." className={form.formState.errors.emergencyContact ? 'border-red-300' : ''} />
+                {form.formState.errors.emergencyContact && <p className="text-xs text-red-500 mt-1">{form.formState.errors.emergencyContact.message}</p>}
+              </div>
+            </div>
+
+            <div>
+              <Label>Student Photo (for ID Card)</Label>
+              <div className="flex items-start gap-4 mt-2">
+                <div className="w-24 h-28 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
+                  {formData.photoUrl ? (
+                    <img src={formData.photoUrl} alt="Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <ImageIcon size={24} className="text-slate-300" />
+                  )}
+                </div>
+                <div className="flex-1 space-y-2">
+                  <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+                    <Upload size={14} />
+                    Upload Photo
+                    <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                  </label>
+                  {formData.photoUrl && (
+                    <button type="button" onClick={() => form.setValue('photoUrl', null)} className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-600 ml-3">
+                      <X size={12} /> Remove
+                    </button>
+                  )}
+                  <p className="text-xs text-slate-400">JPG/PNG, max 2MB. Used on ID card & profile. Optional.</p>
+                  {form.formState.errors.photoUrl && <p className="text-xs text-red-500 mt-1">{form.formState.errors.photoUrl.message}</p>}
+                </div>
+              </div>
             </div>
 
             {/* Duplicate Check */}
@@ -334,7 +429,7 @@ export default function NewAdmission() {
               <Label>Semester / Year / Term</Label>
               <Select
                 value={formData.semester}
-                onValueChange={(v) => setFormData({ ...formData, semester: v as Semester })}
+                onValueChange={(v) => form.setValue('semester', v as Semester, { shouldValidate: true })}
                 disabled={!subCourseDef}
               >
                 <SelectTrigger>
@@ -354,7 +449,11 @@ export default function NewAdmission() {
               <Label>Batch *</Label>
               <Select
                 value={formData.batch}
-                onValueChange={(v) => setFormData({ ...formData, batch: v as BatchName })}
+                onValueChange={(v) => {
+                  form.setValue('batch', v as BatchName, { shouldValidate: true });
+                  const autoSession = batchToSession(v);
+                  form.setValue('session', autoSession, { shouldValidate: true });
+                }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select batch" />
@@ -365,13 +464,14 @@ export default function NewAdmission() {
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-slate-400 mt-1">Auto-sets session to {formData.batch ? batchToSession(formData.batch) : '—'} (editable)</p>
             </div>
 
             <div>
               <Label>Session (Year)</Label>
               <Select
                 value={formData.session?.toString()}
-                onValueChange={(v) => setFormData({ ...formData, session: parseInt(v) })}
+                onValueChange={(v) => form.setValue('session', parseInt(v), { shouldValidate: true } as any)}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select session" />
@@ -382,6 +482,7 @@ export default function NewAdmission() {
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-slate-400 mt-1">Auto-synced from batch — you can override</p>
             </div>
           </CardContent>
         </Card>
@@ -395,7 +496,9 @@ export default function NewAdmission() {
               <CardTitle>Review & Submit</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="flex gap-4 mb-4">
+                {formData.photoUrl && <img src={formData.photoUrl} alt="Student" className="w-20 h-24 rounded-xl object-cover border border-slate-200" />}
+                <div className="flex-1 grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-slate-500">Assigned SNO</span>
                   <div className="font-medium text-blue-600">{nextSno} (auto-assigned)</div>
@@ -415,6 +518,22 @@ export default function NewAdmission() {
                 <div>
                   <span className="text-slate-500">CNIC</span>
                   <div className="text-slate-700">{formData.cnic || 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">DOB</span>
+                  <div className="text-slate-700">{formData.dob || 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Gender</span>
+                  <div className="text-slate-700">{formData.gender || 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Domicile</span>
+                  <div className="text-slate-700">{formData.domicile || 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Emergency</span>
+                  <div className="text-slate-700">{formData.emergencyContact || 'Not entered'}</div>
                 </div>
                 <div>
                   <span className="text-slate-500">Course</span>
@@ -437,6 +556,7 @@ export default function NewAdmission() {
                 <div>
                   <span className="text-slate-500">Session</span>
                   <div className="text-slate-700">{formData.session || '-'}</div>
+                </div>
                 </div>
               </div>
             </CardContent>
@@ -503,7 +623,7 @@ export default function NewAdmission() {
 
       {/* Actions */}
       <div className="flex items-center justify-between">
-        <Button variant="outline" type="button" onClick={step === 1 ? () => navigate(-1) : handleBack}>
+        <Button variant="outline" type="button" onClick={step === 1 ? handleCancel : handleBack}>
           {step === 1 ? 'Cancel' : 'Back'}
         </Button>
         
@@ -512,7 +632,11 @@ export default function NewAdmission() {
             <span className="text-xs text-slate-400">
               {!formData.name.trim() || !formData.fatherName.trim()
                 ? 'Name and father name are required'
-                : 'CNIC must be 13 digits'}
+                : !cnicValid ? 'CNIC must be 13 digits'
+                : !contactValid ? 'Contact number invalid'
+                : !emergencyValid ? 'Emergency contact invalid'
+                : !dobValid ? 'DOB invalid'
+                : 'Fix errors above'}
             </span>
           )}
           {step === 2 && !step2Valid && (

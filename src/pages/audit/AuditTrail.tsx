@@ -16,8 +16,8 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableHead, TableBody, TableRow, TableHeader, TableCell } from '@/components/ui/table';
-import { MOCK_AUDIT } from '@/lib/mockData';
 import { formatDateTime } from '@/lib/utils';
+import { useAuditStore } from '@/stores';
 import type { AuditAction } from '@/types';
 
 // Action icon map
@@ -66,6 +66,7 @@ const ALL_ACTIONS: AuditAction[] = [
 
 export default function AuditTrail() {
   const navigate = useNavigate();
+  const logs = useAuditStore((s) => s.logs);
   const [search, setSearch] = useState('');
   const [actionFilter, setActionFilter] = useState<string>('');
   const [userFilter, setUserFilter] = useState('');
@@ -74,11 +75,11 @@ export default function AuditTrail() {
 
   // Get unique users for filter
   const users = useMemo(() => {
-    return [...new Set(MOCK_AUDIT.map((a) => a.user))];
-  }, []);
+    return [...new Set(logs.map((a) => a.user))];
+  }, [logs]);
 
   const filtered = useMemo(() => {
-    let data = [...MOCK_AUDIT];
+    let data = [...logs];
 
     if (search) {
       const q = search.toLowerCase();
@@ -105,7 +106,7 @@ export default function AuditTrail() {
     });
 
     return data;
-  }, [search, actionFilter, userFilter, sortDesc]);
+  }, [logs, search, actionFilter, userFilter, sortDesc]);
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id);
@@ -262,13 +263,13 @@ export default function AuditTrail() {
             <CardTitle className="text-base flex items-center gap-2">
               Change Details
               <Badge variant="outline" className="text-xs">
-                {MOCK_AUDIT.find((a) => a.id === expandedId)?.action}
+                {logs.find((a) => a.id === expandedId)?.action}
               </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
             {(() => {
-              const log = MOCK_AUDIT.find((a) => a.id === expandedId);
+              const log = logs.find((a) => a.id === expandedId);
               if (!log?.changes || log.changes.length === 0) {
                 return <div className="text-slate-400 text-sm">No field-level changes recorded.</div>;
               }

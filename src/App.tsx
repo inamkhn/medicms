@@ -26,11 +26,19 @@ import BankAccount from '@/pages/bank/BankAccount';
 import AddBankTransaction from '@/pages/bank/AddBankTransaction';
 import AuditTrail from '@/pages/audit/AuditTrail';
 import DataImport from '@/pages/import/DataImport';
-import { useAuthStore } from '@/stores/authStore';
+import { useAuthStore, canWrite } from '@/stores/authStore';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
   return isLoggedIn ? <>{children}</> : <Navigate to="/login" replace />;
+}
+
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
+  const user = useAuthStore((s) => s.user);
+  if (!isLoggedIn) return <Navigate to="/login" replace />;
+  if (!canWrite(user?.role)) return <Navigate to="/dashboard" replace />;
+  return <>{children}</>;
 }
 
 export default function App() {
@@ -43,25 +51,25 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="students" element={<StudentList />} />
           <Route path="ledger" element={<Navigate to="/students" replace />} />
-          <Route path="admissions/new" element={<NewAdmission />} />
-          <Route path="payments/record" element={<RecordPayment />} />
+          <Route path="admissions/new" element={<AdminRoute><NewAdmission /></AdminRoute>} />
+          <Route path="payments/record" element={<AdminRoute><RecordPayment /></AdminRoute>} />
           <Route path="payments/reprint" element={<ReprintReceipt />} />
           <Route path="reports" element={<Reports />} />
           <Route path="settings" element={<Settings />} />
           <Route path="students/:sno" element={<StudentProfile />} />
-          <Route path="students/:sno/edit" element={<EditStudent />} />
+          <Route path="students/:sno/edit" element={<AdminRoute><EditStudent /></AdminRoute>} />
           <Route path="ledger/:sno" element={<StudentLedger />} />
-          <Route path="ledger/:sno/add-demand" element={<AddFeeDemand />} />
-          <Route path="ledger/:sno/add-charge" element={<AddCharge />} />
-          <Route path="ledger/:sno/adjust" element={<LedgerAdjustment />} />
-          <Route path="fee-templates" element={<FeeTemplates />} />
-          <Route path="expenses" element={<ExpensesList />} />
-          <Route path="expenses/add" element={<AddExpense />} />
-          <Route path="expenses/tag-from-bank" element={<TagBankWithdrawals />} />
-          <Route path="bank" element={<BankAccount />} />
-          <Route path="bank/add" element={<AddBankTransaction />} />
+          <Route path="ledger/:sno/add-demand" element={<AdminRoute><AddFeeDemand /></AdminRoute>} />
+          <Route path="ledger/:sno/add-charge" element={<AdminRoute><AddCharge /></AdminRoute>} />
+          <Route path="ledger/:sno/adjust" element={<AdminRoute><LedgerAdjustment /></AdminRoute>} />
+          <Route path="fee-templates" element={<AdminRoute><FeeTemplates /></AdminRoute>} />
+          <Route path="expenses" element={<AdminRoute><ExpensesList /></AdminRoute>} />
+          <Route path="expenses/add" element={<AdminRoute><AddExpense /></AdminRoute>} />
+          <Route path="expenses/tag-from-bank" element={<AdminRoute><TagBankWithdrawals /></AdminRoute>} />
+          <Route path="bank" element={<AdminRoute><BankAccount /></AdminRoute>} />
+          <Route path="bank/add" element={<AdminRoute><AddBankTransaction /></AdminRoute>} />
           <Route path="audit" element={<AuditTrail />} />
-          <Route path="import" element={<DataImport />} />
+          <Route path="import" element={<AdminRoute><DataImport /></AdminRoute>} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { STRUCK_OFF_REASONS } from '@/lib/constants';
 import { formatPKR, formatDate } from '@/lib/utils';
-import { useAuthStore, useStudentStore } from '@/stores';
+import { useAuthStore, useStudentStore, useAuditStore } from '@/stores';
 import type { StudentWithBalance } from '@/types';
 
 interface Props {
@@ -29,11 +29,25 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
   const isReverse = mode === 'reverse';
 
   const handleConfirm = () => {
+    const userName = user?.name ?? 'Admin';
     if (isReverse) {
+      if (!reason.trim()) return;
       reverseStrikeOff(student.sno);
+      useAuditStore.getState().addLog({
+        user: userName,
+        action: 'Struck Off Reversed',
+        studentSno: student.sno,
+        details: `Reason: ${reason.trim()} — was: ${student.struckOffReason ?? '—'} on ${student.struckOffDate ?? '—'}`,
+      });
     } else {
       if (!reason) return;
       strikeOff(student.sno, reason, details, date);
+      useAuditStore.getState().addLog({
+        user: userName,
+        action: 'Struck Off',
+        studentSno: student.sno,
+        details: `Reason: ${[reason, details].filter(Boolean).join(' — ')} on ${date}`,
+      });
     }
     onClose();
   };
@@ -60,16 +74,30 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
         <div className="p-5 space-y-5">
           {isReverse ? (
             /* --- Reverse mode --- */
-            <div className="bg-emerald-50/80 border border-emerald-100 rounded-xl p-4">
-              <p className="text-sm text-emerald-600">
-                {student.name} is currently struck off
-                {student.struckOffDate && <> on {formatDate(student.struckOffDate)}</>}
-                {student.struckOffReason && <> — {student.struckOffReason}</>}.
-              </p>
-              <p className="text-sm text-emerald-500 mt-1.5">
-                Reversing will restore the student to Active status and clear the struck-off record.
-              </p>
-            </div>
+            <>
+              <div className="bg-emerald-50/80 border border-emerald-100 rounded-xl p-4">
+                <p className="text-sm text-emerald-600">
+                  {student.name} is currently struck off
+                  {student.struckOffDate && <> on {formatDate(student.struckOffDate)}</>}
+                  {student.struckOffReason && <> — {student.struckOffReason}</>}.
+                </p>
+                <p className="text-sm text-emerald-500 mt-1.5">
+                  Reversing will restore the student to Active status and clear the struck-off record.
+                </p>
+              </div>
+              <div>
+                <Label>Reason for Reversal *</Label>
+                <Input
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="e.g. Fee cleared — student reinstated by Principal"
+                  className="mt-2"
+                />
+                {!reason.trim() && (
+                  <p className="text-xs text-red-500 mt-1">Reason is required for audit trail</p>
+                )}
+              </div>
+            </>
           ) : (
             /* --- Strike mode --- */
             <>
@@ -146,7 +174,7 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
             Cancel
           </Button>
           {isReverse ? (
-            <Button onClick={handleConfirm}>
+            <Button onClick={handleConfirm} disabled={!reason.trim()}>
               Confirm Reverse
             </Button>
           ) : (

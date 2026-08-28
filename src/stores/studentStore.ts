@@ -10,6 +10,10 @@ import type { Student } from '@/types';
 
 export type NewStudentInput = Omit<Student, 'sno' | 'struckOff' | 'isTestRecord' | 'synced'>;
 
+export function getNextSno(students: Student[]): number {
+  return Math.max(0, ...students.map(s => s.sno)) + 1;
+}
+
 interface StudentState {
   students: Student[];
   addStudent: (input: NewStudentInput) => Student;
@@ -22,7 +26,7 @@ export const useStudentStore = create<StudentState>((set, get) => ({
   students: [...MOCK_STUDENTS],
 
   addStudent: (input) => {
-    const sno = Math.max(...get().students.map(s => s.sno)) + 1;
+    const sno = getNextSno(get().students);
     const created: Student = {
       ...input,
       sno,

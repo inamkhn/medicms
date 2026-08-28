@@ -82,6 +82,33 @@ export function normalizeCNIC(value: string | null | undefined): string | null {
   return value.trim();
 }
 
+// --- Contact validation (PK formats) ---
+// Accepts: 03XXXXXXXXX (11 digits), +923XXXXXXXXX / 923XXXXXXXXX (12 digits after 92), empty (optional)
+export function isValidContact(contact: string): boolean {
+  if (!contact.trim()) return true; // optional
+  const cleaned = contact.replace(/\D/g, '');
+  if (cleaned.length === 11 && cleaned.startsWith('03')) return true;
+  if (cleaned.length === 12 && cleaned.startsWith('923')) return true;
+  if (cleaned.length === 10 && cleaned.startsWith('3')) return true; // without leading 0
+  return false;
+}
+
+export function normalizeContact(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed;
+}
+
+export function formatContact(contact: string | null): string {
+  if (!contact) return 'Not entered';
+  const cleaned = contact.replace(/\D/g, '');
+  if (cleaned.length === 11 && cleaned.startsWith('03')) {
+    return `${cleaned.slice(0, 4)}-${cleaned.slice(4)}`;
+  }
+  return contact;
+}
+
 // --- Semester label ---
 export function getSemesterLabel(semester: string): string {
   return `${semester} Semester`;

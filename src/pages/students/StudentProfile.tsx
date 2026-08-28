@@ -3,9 +3,9 @@
 // Full-page quick view of a student (replaces the old right-side drawer)
 // ============================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Edit, CreditCard, FileText, UserX, Printer, Plus, Scale, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Edit, CreditCard, FileText, UserX, Printer, Plus, Scale, RotateCcw, IdCard, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StruckOffModal } from '@/components/shared/StruckOffModal';
@@ -13,7 +13,9 @@ import { useAuthStore, useStudentStore } from '@/stores';
 import { canWrite } from '@/stores/authStore';
 import { formatDate, formatCNIC, formatPKR, formatBalanceDisplay, getTermLabel } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance, MOCK_LEDGER } from '@/lib/mockData';
+import { INSTITUTE_INFO } from '@/lib/constants';
+import { getStudentsWithBalance } from '@/lib/mockData';
+import { useLedgerStore } from '@/stores';
 
 export default function StudentProfile() {
   const navigate = useNavigate();
@@ -51,8 +53,9 @@ export default function StudentProfile() {
   const termNoun = subDef.course.system === 'annual' ? 'Year' : subDef.course.system === 'months' ? 'Term' : 'Semester';
   const balanceDisplay = formatBalanceDisplay(student.computedBalance);
 
-  // Demanded / paid mini-summary from the ledger
-  const ledger = MOCK_LEDGER.filter((t) => t.studentSno === student.sno);
+  // Demanded / paid mini-summary from the ledger (live store) — selector must be stable
+  const allLedger = useLedgerStore((s) => s.transactions);
+  const ledger = useMemo(() => allLedger.filter((t) => t.studentSno === student.sno), [allLedger, student.sno]);
   const totalDemanded = ledger.reduce((sum, t) => sum + t.fees, 0);
   const totalPaid = ledger.reduce((sum, t) => sum + t.payment, 0);
 
@@ -63,16 +66,43 @@ export default function StudentProfile() {
         <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
           <ArrowLeft size={20} />
         </Button>
+        <div className="w-16 h-20 rounded-xl border border-slate-200 bg-slate-50 overflow-hidden shrink-0 flex items-center justify-center">
+          {student.photoUrl ? (
+            <img src={student.photoUrl} alt={student.name} className="w-full h-full object-cover" />
+          ) : (
+            <User size={24} className="text-slate-300" />
+          )}
+        </div>
         <div className="flex-1 min-w-[220px]">
           <h1 className="text-3xl font-bold text-slate-900 tracking-tight">{student.name}</h1>
           <p className="text-sm text-slate-500 mt-1">
             SNO: {student.sno} · {subDef.course.label} — {subDef.sub.label} · {student.batch} · Session: {student.session}
           </p>
         </div>
+        <Button variant="outline" size="sm" onClick={() => window.print()}>
+          <IdCard size={14} className="mr-2" />
+          Print ID Card
+        </Button>
         <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}`)}>
           <FileText size={14} className="mr-2" />
           View Ledger
         </Button>
+      </div>
+
+      {/* Printable ID Card (visible only on print) */}
+      <div className="hidden print:block">
+        <div className="border-2 border-slate-900 rounded-xl p-6 max-w-[400px] mx-auto text-center">
+          <div className="w-24 h-28 mx-auto rounded-lg overflow-hidden border border-slate-300 bg-slate-50 flex items-center justify-center">
+            {student.photoUrl ? <img src={student.photoUrl} alt={student.name} className="w-full h-full object-cover" /> : <User size={32} className="text-slate-300" />}
+          </div>
+          <h2 className="mt-3 text-lg font-bold text-slate-900">{student.name}</h2>
+          <p className="text-sm text-slate-600">S/O {student.fatherName}</p>
+          <p className="mt-2 text-sm font-mono">SNO: {student.sno}</p>
+          <p className="text-xs text-slate-500">{subDef.course.label} — {subDef.sub.label}</p>
+          <p className="text-xs text-slate-500">{student.batch} · Session {student.session}</p>
+          <p className="mt-3 text-[11px] font-semibold text-slate-700 uppercase tracking-widest">{INSTITUTE_INFO.name}</p>
+          <p className="text-[11px] text-slate-500">{INSTITUTE_INFO.location}</p>
+        </div>
       </div>
 
       {/* Struck off banner */}
@@ -146,10 +176,78 @@ export default function StudentProfile() {
                   <span className="text-slate-500">CNIC</span>
                   <div className="text-slate-700 mt-0.5">{formatCNIC(student.cnic)}</div>
                 </div>
-                <div>
+                <div className="col-span-2">
                   <span className="text-slate-500">Address</span>
-                  <div className="text-slate-700 mt-0.5">{student.address || 'Not entered'}</div>
+                  <div className="text-slate-700 mt-0.5 whitespace-pre-wrap break-words">{student.address || 'Not entered'}</div>
                 </div>
+                <div>
+                  <span className="text-slate-500">DOB</span>
+                  <div className="text-slate-700 mt-0.5">{student.dob ? formatDate(student.dob) : 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Gender</span>
+                  <div className="text-slate-700 mt-0.5">{student.gender || 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Domicile</span>
+                  <div className="text-slate-700 mt-0.5">{student.domicile || 'Not entered'}</div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Emergency Contact</span>
+                  <div className="text-slate-700 mt-0.5">{student.emergencyContact || 'Not entered'}</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Semester History Timeline */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Semester History</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                const demandBySem = ledger.filter(t => t.type === 'Demand' && t.semester).reduce((acc, t) => {
+                  const key = `${t.semester}-${t.session ?? ''}`;
+                  if (!acc[key]) acc[key] = { semester: t.semester!, session: t.session, date: t.date, fees: 0, count: 0 };
+                  acc[key].fees += t.fees;
+                  acc[key].date = t.date < acc[key].date ? t.date : acc[key].date;
+                  acc[key].count += 1;
+                  return acc;
+                }, {} as Record<string, { semester: string; session?: number; date: string; fees: number; count: number }>);
+                const timeline = Object.values(demandBySem).sort((a,b) => parseInt(a.semester,10) - parseInt(b.semester,10));
+                if (timeline.length === 0) {
+                  return <div className="text-sm text-slate-400">No semester demands yet — add from ledger.</div>;
+                }
+                return (
+                  <div className="relative pl-6 space-y-0">
+                    <div className="absolute left-[7px] top-2 bottom-2 w-px bg-slate-200" />
+                    {timeline.map((item, idx) => {
+                      const isCurrent = item.semester === student.semester;
+                      const isPast = parseInt(item.semester,10) < parseInt(student.semester,10);
+                      return (
+                        <div key={idx} className="relative pb-5 last:pb-0">
+                          <div className={`absolute left-[-6px] top-1 w-3 h-3 rounded-full border-2 ${isCurrent ? 'bg-blue-600 border-blue-600' : isPast ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-slate-300'}`} />
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className={`text-sm font-medium ${isCurrent ? 'text-blue-600' : 'text-slate-900'}`}>
+                                {getTermLabel(subDef.course.system, item.semester)} {isCurrent && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100">Current</span>}
+                              </div>
+                              <div className="text-xs text-slate-500 mt-0.5">{item.session ? `Session ${item.session} · ` : ''}{formatDate(item.date)} · {formatPKR(item.fees)} demanded</div>
+                            </div>
+                            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => navigate(`/ledger/${student.sno}`)}>View</Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}>
+                  <Plus size={14} className="mr-1.5" /> Add Demand
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => navigate(`/ledger/${student.sno}`)}>Full Ledger</Button>
               </div>
             </CardContent>
           </Card>

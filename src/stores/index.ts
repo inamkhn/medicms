@@ -5,4 +5,7 @@
 export { useAuthStore, hasPermission, canWrite } from './authStore';
 export { useSyncStore, getSyncIndicator } from './syncStore';
 export { useUIStore } from './uiStore';
-export { useStudentStore } from './studentStore';
+export { useStudentStore, getNextSno } from './studentStore';
+export { useLedgerStore, getNextTxnNo } from './ledgerStore';
+export { useAuditStore } from './auditStore';
+export { useSettingsStore } from './settingsStore';

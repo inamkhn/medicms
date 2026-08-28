@@ -2,12 +2,12 @@
 // MediCMS Desktop v4.0 - Student List
 // ============================================
 
-import { useState, type ReactNode } from 'react';
+import { useState, useRef, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Search, Download, Printer, Eye, BookOpen, CreditCard, Pencil,
   ArrowUp, ArrowDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
-  SlidersHorizontal, ChevronDown, ChevronUp, SearchX, FilterX,
+  SlidersHorizontal, ChevronDown, ChevronUp, SearchX, FilterX, User, Upload, UserX, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,8 +18,9 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { useAuthStore, useStudentStore } from '@/stores';
+import { useAuthStore, useStudentStore, useSettingsStore, useAuditStore } from '@/stores';
 import { canWrite } from '@/stores/authStore';
+import { normalizeCNIC, normalizeContact } from '@/lib/utils';
 
 import { getStudentsWithBalance } from '@/lib/mockData';
 import {
@@ -169,6 +170,7 @@ export default function StudentList() {
   const { user } = useAuthStore();
   const canEdit = canWrite(user?.role);
   const storeStudents = useStudentStore((s) => s.students);
+  const showTestRecords = useSettingsStore((s) => s.showTestRecords);
 
   const [search, setSearch] = useState('');
   const [courseFilter, setCourseFilter] = useState('all');
@@ -182,8 +184,15 @@ export default function StudentList() {
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [showBulkStrike, setShowBulkStrike] = useState(false);
+  const [bulkReason, setBulkReason] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importRows, setImportRows] = useState<{ raw: string[]; error?: string }[]>([]);
+  const [importHeader, setImportHeader] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const allStudents = getStudentsWithBalance(storeStudents).filter((s) => !s.isTestRecord);
+  const allStudents = getStudentsWithBalance(storeStudents).filter((s) => showTestRecords || !s.isTestRecord);
 
   const filterProgramOptions = courseFilter === 'all'
     ? COURSES.flatMap((c) => c.subCourses)
@@ -199,14 +208,16 @@ export default function StudentList() {
   const updateStatus = (v: StatusFilter) => { setStatusFilter(v); setPage(1); };
   const updatePageSize = (v: string) => { setPageSize(parseInt(v, 10)); setPage(1); };
 
-  // Apply filters
+  // Apply filters — search parity with GlobalSearch (name/sno/father/contact/cnic/address/domicile/emergency/course/batch)
   const filteredStudents = allStudents.filter((s) => {
     if (search) {
       const q = search.toLowerCase();
       const { courseLabel, subLabel } = getSubCourseInfo(s.program);
       const haystack = [
-        s.name, s.sno.toString(), s.fatherName, s.contact ?? '', s.cnic ?? '',
-        courseLabel, subLabel,
+        s.name, s.sno.toString(), s.fatherName,
+        s.contact ?? '', s.cnic ?? '', s.cnic?.replace(/\D/g,'') ?? '',
+        s.address ?? '', s.domicile ?? '', s.emergencyContact ?? '',
+        s.gender ?? '', courseLabel, subLabel, s.batch, s.session.toString(),
       ];
       if (!haystack.some((v) => v.toLowerCase().includes(q))) return false;
     }
@@ -289,6 +300,119 @@ export default function StudentList() {
     setPage(1);
   };
 
+  // Bulk selection
+  const toggleSelect = (sno: number) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(sno)) next.delete(sno); else next.add(sno);
+      return next;
+    });
+  };
+  const toggleSelectAllPage = () => {
+    const pageSnos = paginatedStudents.map(s => s.sno);
+    const allSelected = pageSnos.every(sno => selected.has(sno));
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allSelected) pageSnos.forEach(sno => next.delete(sno));
+      else pageSnos.forEach(sno => next.add(sno));
+      return next;
+    });
+  };
+  const exportSelectedCSV = () => {
+    const selectedStudents = sortedStudents.filter(s => selected.has(s.sno));
+    const header = ['SNO','Name','Father','Course','Sub-course','Batch','Session','Term','Contact','CNIC','Reg Date','Status','Balance'];
+    const rows = selectedStudents.map(s => {
+      const info = getSubCourseInfo(s.program);
+      const status = s.struckOff ? 'Struck Off' : s.computedBalance > 0 ? 'Dues' : s.computedBalance < 0 ? 'Credit' : 'Active';
+      return [s.sno, s.name, s.fatherName, info.courseLabel, info.subLabel, s.batch, s.session, getTermLabel(info.system, s.semester), s.contact ?? '', s.cnic ?? '', s.regDate, status, s.computedBalance];
+    });
+    const csv = [header, ...rows].map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url; link.download = `students-selected-${new Date().toISOString().split('T')[0]}.csv`; link.click(); URL.revokeObjectURL(url);
+  };
+  const handleBulkStrike = () => {
+    if (!bulkReason.trim() || selected.size===0) return;
+    const strikeOff = useStudentStore.getState().strikeOff;
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const addLog = useAuditStore.getState().addLog;
+    selected.forEach(sno => {
+      strikeOff(sno, bulkReason.trim(), 'Bulk action', new Date().toISOString().split('T')[0]);
+      addLog({ user: userName, action: 'Struck Off', studentSno: sno, details: `Bulk struck off — Reason: ${bulkReason.trim()}` });
+    });
+    setSelected(new Set());
+    setShowBulkStrike(false);
+    setBulkReason('');
+  };
+  const parseCSV = (text: string) => {
+    const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+    if (lines.length < 2) return { header: [], rows: [] as string[][] };
+    const split = (line: string) => {
+      const out: string[] = []; let cur=''; let inQ=false;
+      for (let i=0;i<line.length;i++){ const c=line[i]; if(c==='"'){ if(inQ && line[i+1]==='"'){cur+='"';i++;} else inQ=!inQ;} else if(c===',' && !inQ){ out.push(cur); cur='';} else cur+=c; }
+      out.push(cur); return out.map(s=>s.trim().replace(/^\"|\"$/g,''));
+    };
+    const header = split(lines[0]).map(h=>h.toLowerCase());
+    const rows = lines.slice(1).map(split);
+    return { header, rows };
+  };
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const { header, rows } = parseCSV(reader.result as string);
+      setImportHeader(header);
+      setImportRows(rows.map(r => ({ raw: r })));
+      setImportOpen(true);
+    };
+    reader.readAsText(file);
+    e.target.value='';
+  };
+  const handleConfirmImport = () => {
+    const addStudent = useStudentStore.getState().addStudent;
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const addLog = useAuditStore.getState().addLog;
+    const h = importHeader;
+    const idx = (name: string) => h.indexOf(name);
+    let count=0;
+    importRows.forEach(({ raw }) => {
+      const get = (n: string) => { const i=idx(n); return i>=0 ? raw[i]?.trim()||'' : ''; };
+      const name = get('name'); const father = get('fathername')||get('father name');
+      if (!name || !father) return;
+      const course = (get('course') as any) || 'Paramedics';
+      const program = (get('program')||get('sub-course')||get('subcourse') as any) || 'Health';
+      const batch = (get('batch') as any) || '17th Batch';
+      const session = parseInt(get('session')||'2026',10)||2026;
+      const semester = (get('semester')||get('term') as any) || '1st';
+      try {
+        const created = addStudent({
+          name, fatherName: father,
+          contact: normalizeContact(get('contact')),
+          cnic: normalizeCNIC(get('cnic')),
+          address: get('address')||null,
+          regDate: get('regdate')||get('reg date')||new Date().toISOString().split('T')[0],
+          photoUrl: null,
+          dob: get('dob')||null,
+          gender: (get('gender') as any)||null,
+          domicile: get('domicile')||null,
+          emergencyContact: normalizeContact(get('emergencycontact')||get('emergency contact')),
+          course, program, batch, session, semester,
+        });
+        addLog({ user: userName, action: 'New Admission', studentSno: created.sno, details: `Bulk import — ${created.name} · ${program} · ${batch}` });
+        count++;
+      } catch {}
+    });
+    setImportOpen(false);
+    setImportRows([]);
+    setImportHeader([]);
+  };
+  const downloadTemplate = () => {
+    const header = ['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact','course','program','batch','session','semester'];
+    const sample = ['Ali Khan','Umar Khan','+923001234567','15602-1234567-1','Mingora Swat','2026-03-20','2000-01-01','Male','Swat','+923001234568','Paramedics','Health','17th Batch','2026','1st'];
+    const csv = [header,sample].map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');
+    const blob=new Blob([csv],{type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='students-template.csv'; a.click(); URL.revokeObjectURL(url);
+  };
+
   const exportCSV = () => {
     const header = [
       'SNO', 'Name', 'Father', 'Course', 'Sub-course', 'Batch', 'Session',
@@ -360,7 +484,7 @@ export default function StudentList() {
             <Input
               value={search}
               onChange={(e) => updateSearch(e.target.value)}
-              placeholder="Search name, SNO, father, contact, CNIC, course..."
+              placeholder="Search name, SNO, father, contact, CNIC, address, domicile, course, batch..."
               className="pl-10"
             />
           </div>
@@ -377,6 +501,15 @@ export default function StudentList() {
           <Button variant="outline" size="sm" onClick={exportCSV}>
             <Download size={14} className="mr-1.5" />
             Export CSV
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+            <Upload size={14} className="mr-1.5" />
+            Import CSV
+          </Button>
+          <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImportFile} />
+          <Button variant="ghost" size="sm" onClick={downloadTemplate}>
+            <Download size={14} className="mr-1.5" />
+            Template
           </Button>
           <Button variant="outline" size="sm" onClick={() => window.print()}>
             <Printer size={14} className="mr-1.5" />
@@ -468,11 +601,73 @@ export default function StudentList() {
         )}
       </div>
 
+      {/* Bulk bar */}
+      {selected.size > 0 && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-blue-700">{selected.size} selected</span>
+          <div className="flex-1" />
+          <Button variant="outline" size="sm" onClick={exportSelectedCSV}>
+            <Download size={14} className="mr-1.5" /> Export Selected
+          </Button>
+          {canEdit && (
+            <Button variant="destructive" size="sm" onClick={() => setShowBulkStrike(true)}>
+              <UserX size={14} className="mr-1.5" /> Bulk Struck Off
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+            <X size={14} className="mr-1.5" /> Clear
+          </Button>
+        </div>
+      )}
+
+      {/* Bulk Strike Modal */}
+      {showBulkStrike && (
+        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
+            <h3 className="font-semibold text-slate-900">Bulk Struck Off ({selected.size} students)</h3>
+            <p className="text-sm text-slate-500">This will mark all selected students as struck off and log to audit.</p>
+            <Input value={bulkReason} onChange={e=>setBulkReason(e.target.value)} placeholder="Reason * — e.g. Non-payment of fees" />
+            {!bulkReason.trim() && <p className="text-xs text-red-500">Reason required</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={()=>setShowBulkStrike(false)}>Cancel</Button>
+              <Button variant="destructive" disabled={!bulkReason.trim()} onClick={handleBulkStrike}>Confirm</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Preview Modal */}
+      {importOpen && (
+        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+            <div className="p-5 border-b">
+              <h3 className="font-semibold">Import Preview — {importRows.length} rows</h3>
+              <p className="text-xs text-slate-500 mt-1">Header: {importHeader.join(', ')}</p>
+              <p className="text-xs text-slate-400">Required: name, fatherName. Optional: contact/cnic/address/regDate/course/program/batch/session/semester/dob/gender/domicile/emergencyContact</p>
+            </div>
+            <div className="flex-1 overflow-auto p-5">
+              <div className="text-xs text-slate-600 space-y-1 max-h-60 overflow-auto border rounded-lg p-3 bg-slate-50">
+                {importRows.slice(0,10).map((r,i)=><div key={i} className="truncate">{i+1}. {r.raw.join(' | ')}</div>)}
+                {importRows.length>10 && <div className="text-slate-400">...and {importRows.length-10} more</div>}
+              </div>
+            </div>
+            <div className="p-5 border-t flex justify-end gap-2">
+              <Button variant="outline" onClick={()=>setImportOpen(false)}>Cancel</Button>
+              <Button onClick={handleConfirmImport}>Import {importRows.length} Students</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100/60 overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-[40px]">
+                <input type="checkbox" checked={paginatedStudents.length>0 && paginatedStudents.every(s=>selected.has(s.sno))} onChange={toggleSelectAllPage} className="w-4 h-4 accent-blue-600" />
+              </TableHead>
+              <TableHead className="w-[50px]">Photo</TableHead>
               <SortableHead label="SNO" sortKey="sno" activeKey={sortKey} dir={sortDir} onSort={handleSort} className="w-[70px]" />
               <SortableHead label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHead label="Program" sortKey="program" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
@@ -493,6 +688,14 @@ export default function StudentList() {
                 className="cursor-pointer"
                 onClick={() => navigate(`/students/${student.sno}`)}
               >
+                <TableCell onClick={e=>e.stopPropagation()}>
+                  <input type="checkbox" checked={selected.has(student.sno)} onChange={()=>toggleSelect(student.sno)} className="w-4 h-4 accent-blue-600" />
+                </TableCell>
+                <TableCell>
+                  <div className="w-9 h-11 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center">
+                    {student.photoUrl ? <img src={student.photoUrl} alt={student.name} className="w-full h-full object-cover" /> : <User size={14} className="text-slate-300" />}
+                  </div>
+                </TableCell>
                 <TableCell className="font-medium text-slate-900">{student.sno}</TableCell>
                 <TableCell>
                   <div className="font-medium text-slate-900">{student.name}</div>

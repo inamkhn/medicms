@@ -7,8 +7,8 @@ import { Search, X, User, Receipt } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn, formatDate } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance, MOCK_LEDGER } from '@/lib/mockData';
-import { useStudentStore } from '@/stores';
+import { getStudentsWithBalance } from '@/lib/mockData';
+import { useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 
 interface SearchResult {
   type: 'student' | 'receipt';
@@ -26,6 +26,8 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const storeStudents = useStudentStore((s) => s.students);
+  const ledgerTransactions = useLedgerStore((s) => s.transactions);
+  const showTestRecords = useSettingsStore((s) => s.showTestRecords);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -38,16 +40,21 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
     }
 
     const q = query.toLowerCase();
-    const students = getStudentsWithBalance(storeStudents).filter(s => 
-      !s.isTestRecord && (
-        s.name.toLowerCase().includes(q) ||
-        s.sno.toString().includes(q) ||
-        s.fatherName.toLowerCase().includes(q) ||
-        (s.contact && s.contact.includes(q))
-      )
-    );
+    const students = getStudentsWithBalance(storeStudents).filter(s => {
+      if (!showTestRecords && s.isTestRecord) return false;
+      const { courseLabel, subLabel } = (() => {
+        try { const d = getSubCourseDef(s.program); return { courseLabel: d.course.label, subLabel: d.sub.label }; } catch { return { courseLabel: '', subLabel: '' }; }
+      })();
+      const haystack = [
+        s.name, s.sno.toString(), s.fatherName,
+        s.contact ?? '', s.cnic ?? '', s.cnic?.replace(/\D/g,'') ?? '',
+        s.address ?? '', s.domicile ?? '', s.emergencyContact ?? '',
+        s.gender ?? '', courseLabel, subLabel, s.batch, s.session.toString(),
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
 
-    const receipts = MOCK_LEDGER.filter(t => 
+    const receipts = ledgerTransactions.filter(t => 
       t.receiptNo && t.receiptNo.toLowerCase().includes(q)
     );
 
@@ -69,7 +76,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
 
     setResults([...studentResults, ...receiptResults]);
     setSelectedIndex(0);
-  }, [query, storeStudents]);
+  }, [query, storeStudents, ledgerTransactions, showTestRecords]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -106,7 +113,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search students, SNO, receipt number, father name..."
+            placeholder="Search students, SNO, CNIC, address, domicile, receipt..."
             className="flex-1 text-lg outline-none text-slate-900 placeholder:text-slate-400 bg-transparent"
           />
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors rounded-full p-1 hover:bg-slate-100">

@@ -2,6 +2,7 @@
 // MediCMS Desktop v4.0 - Student Fee Ledger (Screen 4.1)
 // ============================================
 
+import { useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, CreditCard, Scale, SlidersHorizontal, Printer } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -17,9 +18,9 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { formatPKR, formatDate, formatBalanceDisplay } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance, MOCK_LEDGER } from '@/lib/mockData';
+import { getStudentsWithBalance } from '@/lib/mockData';
 import { canWrite } from '@/stores/authStore';
-import { useAuthStore, useStudentStore } from '@/stores';
+import { useAuthStore, useStudentStore, useLedgerStore } from '@/stores';
 import type { TransactionType } from '@/types';
 
 const TYPE_COLORS: Record<TransactionType, string> = {
@@ -46,8 +47,9 @@ export default function StudentLedger() {
     return <div className="p-8 text-center text-slate-400">Student not found (SNO: {sno})</div>;
   }
 
-  // Get transactions for this student
-  const transactions = MOCK_LEDGER.filter(t => t.studentSno === student.sno);
+  // Get transactions for this student (live store — stable selector + memo filter)
+  const allTransactions = useLedgerStore((s) => s.transactions);
+  const transactions = useMemo(() => allTransactions.filter(t => t.studentSno === student.sno), [allTransactions, student.sno]);
 
   // Compute running balance (fees + charges - discount - payment)
   // Charges are stored as negative discount in Exam/CT transactions

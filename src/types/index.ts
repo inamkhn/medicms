@@ -58,6 +58,11 @@ export interface Student {
   batch: BatchName;
   session: number;                // Year e.g. 2017
   semester: Semester;             // Current semester (derived from ledger)
+  photoUrl?: string | null;        // Base64 data URL or remote URL (for ID Card)
+  dob?: string | null;               // ISO date (YYYY-MM-DD)
+  gender?: 'Male' | 'Female' | 'Other' | null;
+  domicile?: string | null;          // District / Tehsil
+  emergencyContact?: string | null;
   struckOff: boolean;
   struckOffDate?: string;
   struckOffReason?: string;
