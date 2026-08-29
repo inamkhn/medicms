@@ -8,14 +8,22 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { useSyncStore } from '@/stores/syncStore';
-import { useSettingsStore } from '@/stores';
+import { useSettingsStore, useReceiptBookStore, useBudgetStore } from '@/stores';
 import { formatDateTime } from '@/lib/utils';
-import { BANK_INFO, INSTITUTE_INFO } from '@/lib/constants';
+import { BANK_INFO, INSTITUTE_INFO, EXPENSE_CATEGORY_OPTIONS } from '@/lib/constants';
 
 export default function Settings() {
   const { status, lastSync, pendingCount, setSyncing, syncComplete } = useSyncStore();
   const { showTestRecords, setShowTestRecords } = useSettingsStore();
+  const { books, addBook } = useReceiptBookStore();
+  const { budgets, setBudget } = useBudgetStore();
+  const [budgetMonth, setBudgetMonth] = useState(new Date().toISOString().slice(0,7));
+  const [newBookNo, setNewBookNo] = useState('');
+  const [newStart, setNewStart] = useState('');
+  const [newEnd, setNewEnd] = useState('');
+  const [newAssigned, setNewAssigned] = useState('Admin Khalid');
   const [instituteName, setInstituteName] = useState(INSTITUTE_INFO.name);
   const [instituteAddress, setInstituteAddress] = useState(INSTITUTE_INFO.location);
   const [institutePhone, setInstitutePhone] = useState(INSTITUTE_INFO.phone);
@@ -186,6 +194,64 @@ export default function Settings() {
           <div>
             <Label>Account Number</Label>
             <Input value={accountNo} onChange={(e) => setAccountNo(e.target.value)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Receipt Books */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Receipt Books</CardTitle>
+          <CardDescription>Pre-printed receipt ranges — auto-fills next number in Record Payment</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            {books.map(b => (
+              <div key={b.id} className="flex items-center justify-between p-3 rounded-xl border border-slate-100">
+                <div>
+                  <div className="font-medium text-sm">{b.bookNo} — {b.start} to {b.end}</div>
+                  <div className="text-xs text-slate-500">Assigned to {b.assignedTo} · Next #{b.current} {b.current > b.end ? '(exhausted)' : ''} · {b.isActive ? 'Active' : 'Inactive'}</div>
+                </div>
+                <Badge variant="outline" className={b.current <= b.end ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}>{b.current <= b.end ? `${b.end - b.current + 1} left` : 'Exhausted'}</Badge>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-4 gap-2 pt-3 border-t border-slate-100">
+            <Input placeholder="Book No e.g. Book-03" value={newBookNo} onChange={e=>setNewBookNo(e.target.value)} />
+            <Input placeholder="Start e.g. 2001" value={newStart} onChange={e=>setNewStart(e.target.value)} />
+            <Input placeholder="End e.g. 3000" value={newEnd} onChange={e=>setNewEnd(e.target.value)} />
+            <Input placeholder="Assigned To" value={newAssigned} onChange={e=>setNewAssigned(e.target.value)} />
+          </div>
+          <Button variant="outline" size="sm" onClick={()=>{
+            const s=parseInt(newStart,10), e=parseInt(newEnd,10);
+            if(!newBookNo.trim() || isNaN(s) || isNaN(e) || s>=e) { alert('Enter Book No and valid start < end'); return; }
+            addBook({ bookNo: newBookNo.trim(), start: s, end: e, assignedTo: newAssigned.trim() || 'Admin', isActive: true });
+            setNewBookNo(''); setNewStart(''); setNewEnd('');
+          }}>Add Book</Button>
+        </CardContent>
+      </Card>
+
+      {/* Budget Management */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Budgets</CardTitle>
+          <CardDescription>Monthly budget per expense category — shown on Expenses page</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Label>Month</Label>
+            <Input type="month" value={budgetMonth} onChange={e=>setBudgetMonth(e.target.value)} className="w-[160px]" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {EXPENSE_CATEGORY_OPTIONS.map(cat => {
+              const val = budgets.find(b=>b.category===cat.value && b.month===budgetMonth)?.amount ?? '';
+              return (
+                <div key={cat.value} className="flex items-center gap-2">
+                  <Label className="w-32 text-xs">{cat.label}</Label>
+                  <Input type="number" placeholder="0" value={String(val)} onChange={e=> setBudget(cat.value as any, budgetMonth, parseInt(e.target.value,10)||0)} className="flex-1 h-8" />
+                </div>
+              );
+            })}
           </div>
         </CardContent>
       </Card>

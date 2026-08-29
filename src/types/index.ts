@@ -183,6 +183,7 @@ export interface Expense {
   givenBy: string;
   details: string;
   bankTransactionId: string | null;  // Link to bank withdrawal
+  billUrl?: string | null;           // Base64 bill/memo photo
   synced: boolean;
 }
 

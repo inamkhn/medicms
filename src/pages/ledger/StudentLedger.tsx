@@ -65,54 +65,52 @@ export default function StudentLedger() {
   const totalDiscount = transactions.reduce((s, t) => s + (t.discount > 0 ? t.discount : 0), 0);
   const totalPaid = transactions.reduce((s, t) => s + t.payment, 0);
   const totalCharges = transactions.reduce((s, t) => s + (t.discount < 0 ? Math.abs(t.discount) : 0), 0);
-  const balanceDisplay = formatBalanceDisplay(student.computedBalance);
+  const liveBalance = totalDemanded + totalCharges - totalDiscount - totalPaid;
+  const balanceDisplay = formatBalanceDisplay(liveBalance);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-          <ArrowLeft size={20} />
+    <div className="space-y-3">
+      {/* Header — compact */}
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate(-1)}>
+          <ArrowLeft size={14} />
         </Button>
-        <div className="flex-1">
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Fee Ledger</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            {student.name} (SNO: {student.sno}) · {getSubCourseDef(student.program).course.label} — {getSubCourseDef(student.program).sub.label} · {student.batch} · Session: {student.session}
+        <div className="flex-1 min-w-0">
+          <h1 className="text-[14px] font-bold text-slate-900 tracking-tight">Fee Ledger — {student.name}</h1>
+          <p className="text-[11px] text-slate-500 truncate">
+            SNO:{student.sno} · {getSubCourseDef(student.program).course.label}—{getSubCourseDef(student.program).sub.label} · {student.batch} · {student.session} · <span className={balanceDisplay.color}>{balanceDisplay.label}</span>
           </p>
         </div>
-        <Button variant="outline" size="sm">
-          <Printer size={14} className="mr-2" />
-          Print Statement
+        <Button variant="outline" size="sm" className="h-7 text-[12px] print:hidden" onClick={() => window.print()}>
+          <Printer size={12} className="mr-1.5" />
+          Print
         </Button>
       </div>
 
-      {/* Balance Summary */}
+      {/* Balance Summary — compact single row */}
       <Card>
-        <CardContent className="py-4">
-          <div className="grid grid-cols-5 gap-4 text-sm">
+        <CardContent className="py-2.5">
+          <div className="grid grid-cols-5 gap-2 text-[11px]">
             <div>
-              <span className="text-slate-500">Live Balance</span>
-              <div className={`text-xl font-bold ${balanceDisplay.color}`}>{balanceDisplay.label}</div>
+              <div className="text-slate-500 uppercase tracking-wide text-[10px]">Live Balance</div>
+              <div className={`text-[13px] font-bold ${balanceDisplay.color}`}>{balanceDisplay.label}</div>
             </div>
             <div>
-              <span className="text-slate-500">Total Demanded</span>
-              <div className="font-semibold text-slate-900">{formatPKR(totalDemanded)}</div>
+              <div className="text-slate-500 uppercase tracking-wide text-[10px]">Demanded</div>
+              <div className="font-semibold text-slate-900 text-[12px]">{formatPKR(totalDemanded)}</div>
             </div>
             <div>
-              <span className="text-slate-500">Discounts</span>
-              <div className="font-semibold text-teal-500">{formatPKR(totalDiscount)}</div>
+              <div className="text-slate-500 uppercase tracking-wide text-[10px]">Discounts</div>
+              <div className="font-semibold text-teal-600 text-[12px]">{formatPKR(totalDiscount)}</div>
             </div>
             <div>
-              <span className="text-slate-500">Total Paid</span>
-              <div className="font-semibold text-emerald-500">{formatPKR(totalPaid)}</div>
+              <div className="text-slate-500 uppercase tracking-wide text-[10px]">Paid</div>
+              <div className="font-semibold text-emerald-600 text-[12px]">{formatPKR(totalPaid)}</div>
             </div>
             <div>
-              <span className="text-slate-500">Charges</span>
-              <div className="font-semibold text-purple-500">{formatPKR(totalCharges)}</div>
+              <div className="text-slate-500 uppercase tracking-wide text-[10px]">Charges</div>
+              <div className="font-semibold text-purple-600 text-[12px]">{formatPKR(totalCharges)}</div>
             </div>
-          </div>
-          <div className="text-xs text-slate-400 mt-3">
-            Computed from ledger — SUM of all rows. Never from Dues column.
           </div>
         </CardContent>
       </Card>
@@ -168,24 +166,24 @@ export default function StudentLedger() {
         </Table>
       </Card>
 
-      {/* Actions */}
+      {/* Actions — compact toolbar */}
       {canEdit && (
-        <div className="flex gap-3">
-          <Button onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}>
-            <Plus size={16} className="mr-2" />
-            Add Fee Demand
+        <div className="flex gap-1.5 print:hidden">
+          <Button size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}>
+            <Plus size={12} className="mr-1.5" />
+            Demand
           </Button>
-          <Button variant="outline" onClick={() => navigate(`/ledger/${student.sno}/add-charge`)}>
-            <Scale size={16} className="mr-2" />
-            Add Charge
+          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/add-charge`)}>
+            <Scale size={12} className="mr-1.5" />
+            Charge
           </Button>
-          <Button variant="outline" onClick={() => navigate(`/ledger/${student.sno}/adjust`)}>
-            <SlidersHorizontal size={16} className="mr-2" />
+          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/adjust`)}>
+            <SlidersHorizontal size={12} className="mr-1.5" />
             Adjust
           </Button>
-          <Button variant="outline" onClick={() => navigate(`/payments/record?sno=${student.sno}`)}>
-            <CreditCard size={16} className="mr-2" />
-            Record Payment
+          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/payments/record?sno=${student.sno}`)}>
+            <CreditCard size={12} className="mr-1.5" />
+            Payment
           </Button>
         </div>
       )}

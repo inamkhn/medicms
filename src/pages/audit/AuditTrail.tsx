@@ -113,21 +113,21 @@ export default function AuditTrail() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-3">
+      {/* Header — compact */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/dashboard')}>
-            <ArrowLeft size={16} />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate('/dashboard')}>
+            <ArrowLeft size={14} />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Audit Trail</h1>
-            <p className="text-sm text-slate-500">
-              Complete log of every action — who did what, when, and to which student
+            <h1 className="text-[15px] font-bold text-slate-900">Audit Trail</h1>
+            <p className="text-[11px] text-slate-500">
+              Who did what, when, to which student
             </p>
           </div>
         </div>
-        <Badge variant="outline">{filtered.length} entries</Badge>
+        <Badge variant="outline" className="text-[11px]">{filtered.length} entries</Badge>
       </div>
 
       {/* Filters */}

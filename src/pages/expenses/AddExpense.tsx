@@ -4,7 +4,7 @@
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Upload, X, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,7 +16,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { EXPENSE_CATEGORY_OPTIONS } from '@/lib/constants';
+import { EXPENSE_CATEGORY_OPTIONS, BANK_INFO } from '@/lib/constants';
+import { useExpenseStore, useBankStore, getNextBankSno, useAuditStore, useAuthStore } from '@/stores';
+import { formatPKR } from '@/lib/utils';
+import type { Expense, BankTransaction } from '@/types';
 
 export default function AddExpense() {
   const navigate = useNavigate();
@@ -28,12 +31,58 @@ export default function AddExpense() {
   const [details, setDetails] = useState('');
   const [paidFrom, setPaidFrom] = useState<'petty' | 'bank'>('bank');
   const [bankNarration, setBankNarration] = useState('');
+  const [billUrl, setBillUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const handleBillChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    if (!file.type.startsWith('image/')) { alert('Only images allowed'); return; }
+    if (file.size > 3 * 1024 * 1024) { alert('Max 3MB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => setBillUrl(reader.result as string);
+    reader.readAsDataURL(file);
+  };
 
   const handleSubmit = async () => {
     if (!category || !amount) return;
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount <= 0) return;
     setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const expId = `exp-${Date.now()}`;
+    let bankTxId: string | null = null;
+    if (paidFrom === 'bank') {
+      const bankTxs = useBankStore.getState().transactions;
+      const nextSno = getNextBankSno(bankTxs);
+      const lastBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
+      const bankTx: BankTransaction = {
+        sno: nextSno,
+        date,
+        deposit: 0,
+        withdrawal: numAmount,
+        balance: lastBalance - numAmount,
+        narration: bankNarration.trim() || `${EXPENSE_CATEGORY_OPTIONS.find(c=>c.value===category)?.label ?? category} — ${details.trim() || 'Expense'} · ${givenBy.trim() || userName}`,
+        linkedExpenseId: expId,
+        isPersonal: false,
+        synced: false,
+      };
+      useBankStore.getState().addTransaction(bankTx);
+      bankTxId = String(nextSno);
+    }
+    const expense: Expense = {
+      id: expId,
+      category: category as any,
+      amount: numAmount,
+      date,
+      time,
+      givenBy: givenBy.trim() || userName,
+      details: details.trim() || EXPENSE_CATEGORY_OPTIONS.find(c=>c.value===category)?.label || category,
+      bankTransactionId: bankTxId,
+      billUrl: billUrl || null,
+      synced: false,
+    };
+    useExpenseStore.getState().addExpense(expense);
+    useAuditStore.getState().addLog({ user: userName, action: 'Expense Added', details: `${EXPENSE_CATEGORY_OPTIONS.find(c=>c.value===category)?.label ?? category} ${formatPKR(numAmount)} · ${givenBy.trim() || userName}${bankTxId ? ` · Bank #${bankTxId} ${BANK_INFO.accountNo}` : ' · Petty Cash'} — ${details.trim() || ''}` });
     setLoading(false);
     navigate('/expenses');
   };
@@ -104,6 +153,23 @@ export default function AddExpense() {
               onChange={(e) => setDetails(e.target.value)}
               placeholder="Additional details"
             />
+          </div>
+
+          <div>
+            <Label>Bill / Receipt Photo</Label>
+            <div className="flex items-start gap-4 mt-2">
+              <div className="w-24 h-28 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
+                {billUrl ? <img src={billUrl} alt="Bill" className="w-full h-full object-cover" /> : <ImageIcon size={20} className="text-slate-300" />}
+              </div>
+              <div className="flex-1 space-y-2">
+                <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+                  <Upload size={14} /> Upload Bill
+                  <input type="file" accept="image/*" className="hidden" onChange={handleBillChange} />
+                </label>
+                {billUrl && <button type="button" onClick={() => setBillUrl(null)} className="inline-flex items-center gap-1 text-xs text-red-500 ml-2"><X size={12} /> Remove</button>}
+                <p className="text-xs text-slate-400">JPG/PNG max 3MB — printed on voucher, shown in list</p>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

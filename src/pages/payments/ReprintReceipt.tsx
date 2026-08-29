@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatPKR, formatDate } from '@/lib/utils';
-import { MOCK_LEDGER, getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalance } from '@/lib/mockData';
+import { useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 
 interface ReceiptItem {
   receiptNo: string;
@@ -21,20 +22,24 @@ interface ReceiptItem {
 export default function ReprintReceipt() {
   const [search, setSearch] = useState('');
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptItem | null>(null);
+  const storeStudents = useStudentStore(s => s.students);
+  const allLedger = useLedgerStore(s => s.transactions);
+  const showTestRecords = useSettingsStore(s => s.showTestRecords);
 
-  // Build receipt list from ledger payments
-  const allReceipts: ReceiptItem[] = MOCK_LEDGER
-    .filter(t => t.receiptNo && t.payment > 0)
+  // Build receipt list from ledger payments (live store)
+  const allReceipts: ReceiptItem[] = allLedger
+    .filter(t => t.receiptNo && (t.payment > 0 || t.discount !== 0))
     .map(t => {
-      const student = getStudentsWithBalance().find(s => s.sno === t.studentSno);
+      const student = getStudentsWithBalance(storeStudents).find(s => s.sno === t.studentSno);
+      if (!showTestRecords && student?.isTestRecord) return null as any;
       return {
         receiptNo: t.receiptNo!,
-        studentName: student?.name ?? 'Unknown',
+        studentName: student?.name ?? `SNO:${t.studentSno}`,
         studentSno: t.studentSno,
-        amount: t.payment,
+        amount: t.payment || Math.abs(t.discount),
         date: t.date,
       };
-    });
+    }).filter(Boolean);
 
   const filteredReceipts = search.length >= 1
     ? allReceipts.filter(r =>

@@ -9,12 +9,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
 import { getStudentsWithBalance } from '@/lib/mockData';
-import { useAuthStore, useStudentStore } from '@/stores';
-import { FEE_RULES, getSubCourseDef } from '@/lib/constants';
-import type { StudentWithBalance } from '@/types';
+import { useAuthStore, useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useSettingsStore, useReceiptBookStore, useBankStore, getNextBankSno, useApprovalStore } from '@/stores';
+import { FEE_RULES, getSubCourseDef, BANK_INFO } from '@/lib/constants';
+import { DISCOUNT_APPROVAL_THRESHOLD } from '@/stores/approvalStore';
+import type { StudentWithBalance, LedgerTransaction } from '@/types';
 
 type Step = 'search' | 'confirm' | 'payment' | 'success';
 
@@ -32,20 +34,27 @@ export default function RecordPayment() {
   const [discountReason, setDiscountReason] = useState('');
   const [receiptNo, setReceiptNo] = useState('');
   const [narration, setNarration] = useState('');
+  const [paymentMode, setPaymentMode] = useState<'Cash' | 'Bank' | 'Online' | 'Cheque'>('Cash');
+  const [bankRef, setBankRef] = useState('');
   const [loading, setLoading] = useState(false);
 
   const storeStudents = useStudentStore((s) => s.students);
+  const showTestRecords = useSettingsStore(s => s.showTestRecords);
+  const allLedger = useLedgerStore(s => s.transactions);
+  const receiptBooks = useReceiptBookStore(s => s.books);
+  const getNextReceipt = useReceiptBookStore(s => s.getNextReceipt);
+  // Allow struckOff with dues (collection), hide test unless setting enabled
   const students = useMemo(
-    () => getStudentsWithBalance(storeStudents).filter(s => !s.isTestRecord && !s.struckOff),
-    [storeStudents]
+    () => getStudentsWithBalance(storeStudents).filter(s => (showTestRecords || !s.isTestRecord)),
+    [storeStudents, showTestRecords]
   );
 
   const searchResults = search.length >= 2
-    ? students.filter(s =>
-        s.name.toLowerCase().includes(search.toLowerCase()) ||
-        s.sno.toString().includes(search) ||
-        s.fatherName.toLowerCase().includes(search.toLowerCase())
-      ).slice(0, 5)
+    ? students.filter(s => {
+        const q = search.toLowerCase();
+        const hay = [s.name, s.sno.toString(), s.fatherName, s.contact ?? '', s.cnic ?? '', s.cnic?.replace(/\D/g,'') ?? ''].join(' ').toLowerCase();
+        return hay.includes(q);
+      }).slice(0, 5)
     : [];
 
   // Pre-select student from URL param
@@ -67,30 +76,139 @@ export default function RecordPayment() {
 
   const handleConfirm = () => {
     setStep('payment');
+    // auto-fill receipt from book
+    if (!receiptNo) {
+      const next = getNextReceipt(user?.name ?? 'Admin');
+      if (next) setReceiptNo(next);
+    }
   };
+
+  // Auto-fill receipt when entering payment step or user changes
+  useEffect(() => {
+    if (step === 'payment' && !receiptNo) {
+      const next = getNextReceipt(user?.name ?? 'Admin');
+      if (next) setReceiptNo(next);
+    }
+  }, [step, user, receiptNo, getNextReceipt]);
 
   const handleSubmit = async () => {
+    if (!selectedStudent || paymentAmount <= 0) return;
+    if (discountAmount > 0 && !discountReason.trim()) return;
+    if (paymentMode === 'Cheque' && !bankRef.trim()) { alert('Cheque number is required'); return; }
+    if (!receiptNo.trim()) { alert('Receipt number is required from receipt book'); return; }
+    const dup = allLedger.some(t => t.receiptNo && t.receiptNo.toLowerCase() === receiptNo.trim().toLowerCase());
+    if (dup) { alert(`Receipt No. ${receiptNo.trim()} already exists`); return; }
+    // Validate against receipt book range
+    const num = parseInt(receiptNo.replace('#',''),10);
+    const book = receiptBooks.find(b => b.isActive && num >= b.start && num <= b.end);
+    if (!book) { alert(`Receipt ${receiptNo} not in any active book range (${receiptBooks.map(b=>`${b.bookNo}:${b.start}-${b.end}`).join(', ')})`); return; }
+    // Discount approval — >5k requires Principal
+    if (discountAmount > DISCOUNT_APPROVAL_THRESHOLD && user?.role !== 'Principal') {
+      const userName = user?.name ?? 'Admin';
+      useApprovalStore.getState().addRequest({
+        type: 'Discount',
+        studentSno: selectedStudent.sno,
+        studentName: selectedStudent.name,
+        amount: paymentAmount,
+        discountAmount,
+        receiptNo: receiptNo.trim(),
+        reason: discountReason.trim(),
+        details: `Payment ${formatPKR(paymentAmount)} Discount ${formatPKR(discountAmount)} · Rcpt ${receiptNo.trim()} · ${paymentMode} — ${discountReason.trim()}`,
+        requestedBy: userName,
+        payload: { paymentAmount, discountAmount, discountReason: discountReason.trim(), receiptNo: receiptNo.trim(), paymentMode, bankRef: bankRef.trim(), narration: narration.trim() },
+      });
+      alert(`Discount ${formatPKR(discountAmount)} exceeds PKR ${DISCOUNT_APPROVAL_THRESHOLD.toLocaleString()} — sent for Principal approval. Payment not yet posted.`);
+      return;
+    }
+    if (discountAmount > DISCOUNT_APPROVAL_THRESHOLD && user?.role === 'Principal') {
+      const ok = window.confirm(`Discount ${formatPKR(discountAmount)} exceeds threshold — Principal approval. Confirm posting?`);
+      if (!ok) return;
+    }
+    if (newBalance < FEE_RULES.creditGuardThreshold) {
+      if (user?.role !== 'Principal') {
+        useApprovalStore.getState().addRequest({
+          type: 'OverPayment',
+          studentSno: selectedStudent.sno,
+          studentName: selectedStudent.name,
+          amount: paymentAmount,
+          discountAmount,
+          receiptNo: receiptNo.trim(),
+          reason: `Over-payment would go to ${formatPKR(newBalance)} (below ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))})`,
+          details: `Over-payment guard — ${formatPKR(paymentAmount)} discount ${formatPKR(discountAmount)} receipt ${receiptNo.trim()}`,
+          requestedBy: user?.name ?? 'Admin',
+          payload: { paymentAmount, discountAmount, discountReason: discountReason.trim(), receiptNo: receiptNo.trim(), paymentMode, bankRef: bankRef.trim(), narration: narration.trim() },
+        });
+        alert('Over-payment below -PKR 10,000 — sent for Principal approval.');
+        return;
+      }
+      const ok = window.confirm(`Over-payment guard: balance would go to ${formatPKR(newBalance)} (below ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))}). Continue with Principal approval?`);
+      if (!ok) return;
+    }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 1000));
-    setStep('success');
+    const nextTxn = getNextTxnNo(allLedger, selectedStudent.sno);
+    const userName = user?.name ?? 'Admin';
+    const modeLabel = paymentMode === 'Bank' ? `Bank ${BANK_INFO.name} ${bankRef ? `Ref ${bankRef}` : ''}` : paymentMode;
+    const tx: LedgerTransaction = {
+      id: `tx-${selectedStudent.sno}-${nextTxn}-${Date.now()}`,
+      studentSno: selectedStudent.sno,
+      txnNo: nextTxn,
+      date: new Date().toISOString().split('T')[0],
+      type: 'Pay',
+      fees: 0,
+      discount: discountAmount,
+      payment: paymentAmount,
+      receiptNo: receiptNo.trim() || null,
+      receivedBy: userName,
+      narration: narration.trim() || `${modeLabel}${discountAmount > 0 ? ` Discount: ${discountReason.trim()}` : ''}`,
+      createdAt: new Date().toISOString(),
+      createdBy: userName,
+      synced: false,
+    };
+    useLedgerStore.getState().addTransaction(tx);
+    useReceiptBookStore.getState().useReceipt(receiptNo.trim(), userName);
+    // Bank reconciliation — if Bank/Online/Cheque, create deposit
+    if (paymentMode !== 'Cash') {
+      const bankTxs = useBankStore.getState().transactions;
+      const nextSno = getNextBankSno(bankTxs);
+      const lastBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
+      useBankStore.getState().addTransaction({
+        sno: nextSno,
+        date: new Date().toISOString().split('T')[0],
+        deposit: paymentAmount,
+        withdrawal: 0,
+        balance: lastBalance + paymentAmount,
+        narration: `Fee from ${selectedStudent.name} (SNO:${selectedStudent.sno}) · Rcpt ${receiptNo.trim()}${bankRef ? ` · ${bankRef}` : ''} · ${modeLabel}`,
+        linkedExpenseId: null,
+        isPersonal: false,
+        synced: false,
+      });
+    }
+    useAuditStore.getState().addLog({ user: userName, action: 'Payment', studentSno: selectedStudent.sno, details: `${formatPKR(paymentAmount)}${discountAmount>0 ? ` + Disc ${formatPKR(discountAmount)} (${discountReason.trim()})` : ''} · ${modeLabel} · Rcpt ${receiptNo.trim() || 'N/A'}` });
     setLoading(false);
+    setStep('success');
   };
 
-  const balance = selectedStudent?.computedBalance ?? 0;
+  // Live balance from ledger (not stale MOCK_BALANCES)
+  const liveBalance = useMemo(() => {
+    if (!selectedStudent) return 0;
+    const txs = allLedger.filter(t => t.studentSno === selectedStudent.sno);
+    return txs.reduce((s,t) => s + t.fees + (t.discount < 0 ? -t.discount : 0) - (t.discount > 0 ? t.discount : 0) - t.payment, 0);
+  }, [allLedger, selectedStudent]);
+  const balance = liveBalance;
   const paymentAmount = parseFloat(amount) || 0;
   const discountAmount = parseFloat(discount) || 0;
   const newBalance = balance - paymentAmount - discountAmount;
 
   return (
-    <div className="w-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-          <ArrowLeft size={20} />
+    <div className="w-auto space-y-3">
+      {/* Header — compact */}
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate(-1)}>
+          <ArrowLeft size={14} />
         </Button>
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Record Cash Payment</h1>
-          <p className="text-sm text-slate-500">Ctrl+P shortcut</p>
+          <h1 className="text-[15px] font-bold text-slate-900">Record Payment</h1>
+          <p className="text-[11px] text-slate-500">Ctrl+P · Bank/Cash · Receipt book auto</p>
         </div>
       </div>
 
@@ -218,22 +336,46 @@ export default function RecordPayment() {
 
               {parseFloat(discount) > 0 && (
                 <div>
-                  <Label>Discount Reason</Label>
+                  <Label>Discount Reason *</Label>
                   <Input
                     value={discountReason}
                     onChange={(e) => setDiscountReason(e.target.value)}
-                    placeholder="Reason for discount"
+                    placeholder="Reason for discount — required"
                   />
+                  {!discountReason.trim() && <p className="text-xs text-red-500 mt-1">Required when discount &gt; 0</p>}
                 </div>
               )}
 
               <div>
-                <Label>Receipt Number</Label>
+                <Label>Payment Mode *</Label>
+                <Select value={paymentMode} onValueChange={v => setPaymentMode(v as any)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Cash">Cash</SelectItem>
+                    <SelectItem value="Bank">Bank Transfer — {BANK_INFO.name}</SelectItem>
+                    <SelectItem value="Online">Online / Easypaisa / JazzCash</SelectItem>
+                    <SelectItem value="Cheque">Cheque</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {paymentMode !== 'Cash' && (
+                <div>
+                  <Label>Bank Ref / Transaction No. {paymentMode === 'Cheque' ? '*' : ''}</Label>
+                  <Input value={bankRef} onChange={e=>setBankRef(e.target.value)} placeholder={paymentMode === 'Cheque' ? 'Cheque No. required' : 'e.g. TRX123, UTR'} />
+                  <p className="text-xs text-slate-400 mt-1">Creates a linked bank deposit in <strong>{BANK_INFO.name} {BANK_INFO.accountNo}</strong> for reconciliation</p>
+                </div>
+              )}
+
+              <div>
+                <Label>Receipt Number *</Label>
                 <Input
                   value={receiptNo}
                   onChange={(e) => setReceiptNo(e.target.value)}
-                  placeholder="From paper receipt book"
+                  placeholder="Auto-filled from receipt book — editable if needed"
                 />
+                <p className="text-xs text-slate-400 mt-1">
+                  Book: {receiptBooks.find(b=>b.assignedTo=== (user?.name ?? 'Admin') && b.isActive)?.bookNo ?? receiptBooks.find(b=>b.isActive)?.bookNo ?? '—'} {receiptBooks.find(b=>b.isActive) ? `range ${receiptBooks.find(b=>b.isActive)!.start}-${receiptBooks.find(b=>b.isActive)!.end} next #${receiptBooks.find(b=>b.isActive)!.current}` : ''} · auto-filled, must be unique
+                </p>
               </div>
 
               <div>
@@ -287,7 +429,7 @@ export default function RecordPayment() {
                 </Button>
                 <Button
                   onClick={handleSubmit}
-                  disabled={loading || paymentAmount <= 0 || newBalance < FEE_RULES.creditGuardThreshold}
+                  disabled={loading || paymentAmount <= 0 || (discountAmount>0 && !discountReason.trim()) || (paymentMode==='Cheque' && !bankRef.trim())}
                 >
                   {loading ? 'Saving...' : 'Save Payment'}
                 </Button>
@@ -313,10 +455,10 @@ export default function RecordPayment() {
               </div>
             </div>
             <div className="flex justify-center gap-3">
-              <Button variant="outline" onClick={() => { setStep('search'); setSelectedStudent(null); }}>
+              <Button variant="outline" onClick={() => { setStep('search'); setSelectedStudent(null); setAmount(''); setDiscount('0'); setDiscountReason(''); setReceiptNo(''); setNarration(''); setPaymentMode('Cash'); setBankRef(''); }}>
                 Record Another
               </Button>
-              <Button variant="outline">
+              <Button variant="outline" onClick={() => window.print()}>
                 <Printer size={16} className="mr-1" />
                 Print Receipt
               </Button>

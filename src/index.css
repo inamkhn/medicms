@@ -13,24 +13,27 @@
 
 @layer base {
   :root {
-    --background: 210 40% 98%;
+    /* Desktop — tight, native */
+    --background: 0 0% 96.1%; /* #F5F5F7 macOS window */
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
     --primary: 217 91% 60%;
     --primary-foreground: 210 40% 98%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215 16% 47%;
-    --border: 214 32% 91%;
+    --muted: 210 8% 95%;
+    --muted-foreground: 215 12% 47%;
+    --border: 220 13% 91%; /* #E5E7EB */
     --destructive: 0 84% 60%;
     --destructive-foreground: 210 40% 98%;
-    --radius: 0.75rem;
+    --radius: 0.5rem; /* 8px desktop */
 
-    /* New design tokens */
-    --card-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.04), 0 1px 2px -1px rgb(0 0 0 / 0.04);
-    --card-shadow-hover: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
-    --glass-bg: rgb(255 255 255 / 0.8);
-    --glass-border: rgb(148 163 184 / 0.15);
+    /* Desktop tokens */
+    --card-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --card-shadow-hover: 0 2px 8px 0 rgb(0 0 0 / 0.08);
+    --glass-bg: rgb(255 255 255 / 0.85);
+    --glass-border: rgb(148 163 184 / 0.12);
+    --rail-width: 80px;
+    --titlebar-height: 32px;
   }
 }
 
@@ -39,11 +42,17 @@
   box-sizing: border-box;
 }
 
+html {
+  font-size: 13px; /* desktop base */
+}
+
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   margin: 0;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;

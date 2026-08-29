@@ -10,8 +10,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { MOCK_BANK } from '@/lib/mockData';
 import { formatPKR } from '@/lib/utils';
+import { useBankStore, getNextBankSno, useAuditStore, useAuthStore } from '@/stores';
+import type { BankTransaction } from '@/types';
 
 type TxnType = 'deposit' | 'withdrawal';
 
@@ -25,18 +26,32 @@ export default function AddBankTransaction() {
   const [isPersonal, setIsPersonal] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Last balance for preview
-  const lastBalance = MOCK_BANK.length > 0 ? MOCK_BANK[MOCK_BANK.length - 1].balance : 0;
+  // Last balance for preview — live store
+  const bankTxs = useBankStore(s => s.transactions);
+  const lastBalance = bankTxs.length > 0 ? bankTxs[bankTxs.length - 1].balance : 0;
   const numAmount = parseFloat(amount) || 0;
   const newBalance = txnType === 'deposit' ? lastBalance + numAmount : lastBalance - numAmount;
 
   const handleSave = () => {
     if (!amount || numAmount <= 0 || !date) return;
     setSaving(true);
-    setTimeout(() => {
-      setSaving(false);
-      navigate('/bank');
-    }, 800);
+    const nextSno = getNextBankSno(bankTxs);
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const tx: BankTransaction = {
+      sno: nextSno,
+      date,
+      deposit: txnType === 'deposit' ? numAmount : 0,
+      withdrawal: txnType === 'withdrawal' ? numAmount : 0,
+      balance: newBalance,
+      narration: narration.trim() || (txnType === 'deposit' ? 'Fee collection' : 'Withdrawal'),
+      linkedExpenseId: null,
+      isPersonal,
+      synced: false,
+    };
+    useBankStore.getState().addTransaction(tx);
+    useAuditStore.getState().addLog({ user: userName, action: 'Bank Entry', details: `${txnType} ${formatPKR(numAmount)} — ${tx.narration}${isPersonal ? ' (Personal)' : ''}` });
+    setSaving(false);
+    navigate('/bank');
   };
 
   return (

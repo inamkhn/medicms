@@ -63,41 +63,43 @@ const REPORT_CATEGORIES: ReportCategory[] = [
 export default function Reports() {
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Reports</h1>
-        <p className="text-sm text-slate-500">All generated offline ✅</p>
+    <div className="space-y-4">
+      {/* Header — compact */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-[15px] font-bold text-slate-900">Reports</h1>
+        <span className="text-[11px] text-slate-500">All offline · 16 reports</span>
       </div>
 
-      {/* Report Categories */}
-      <div className="space-y-6">
+      {/* Report Categories — dense */}
+      <div className="space-y-4">
         {REPORT_CATEGORIES.map((category) => (
           <div key={category.title}>
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
+            <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-widest mb-1.5">
               {category.title}
             </h2>
-            <div className="grid gap-3">
+            <div className="grid gap-1.5">
               {category.reports.map((report) => (
                 <Card
                   key={report.name}
-                  className="cursor-pointer hover:border-blue-200 hover:shadow-sm transition-all"
+                  className="cursor-pointer hover:border-slate-300 hover:shadow-sm transition-all"
                 >
-                  <CardContent className="py-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <FileText size={20} className="text-slate-400" />
-                        <div>
-                          <div className="font-medium">{report.name}</div>
-                          <div className="text-sm text-slate-500">{report.description}</div>
+                  <CardContent className="py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 bg-slate-100 rounded-md flex items-center justify-center shrink-0">
+                          <FileText size={13} className="text-slate-500" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-medium text-[12px] text-slate-900 truncate">{report.name}</div>
+                          <div className="text-[11px] text-slate-500 truncate">{report.description}</div>
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        <Button variant="ghost" size="sm">
-                          <Printer size={16} />
+                      <div className="flex gap-1 shrink-0">
+                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                          <Printer size={12} />
                         </Button>
-                        <Button variant="ghost" size="sm">
-                          <Download size={16} />
+                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                          <Download size={12} />
                         </Button>
                       </div>
                     </div>

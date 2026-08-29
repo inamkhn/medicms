@@ -16,6 +16,7 @@ import Settings from '@/pages/Settings';
 import EditStudent from '@/pages/students/EditStudent';
 import StudentLedger from '@/pages/ledger/StudentLedger';
 import AddFeeDemand from '@/pages/ledger/AddFeeDemand';
+import BulkFeeDemand from '@/pages/ledger/BulkFeeDemand';
 import AddCharge from '@/pages/ledger/AddCharge';
 import LedgerAdjustment from '@/pages/ledger/LedgerAdjustment';
 import FeeTemplates from '@/pages/fee-templates/FeeTemplates';
@@ -25,6 +26,7 @@ import TagBankWithdrawals from '@/pages/expenses/TagBankWithdrawals';
 import BankAccount from '@/pages/bank/BankAccount';
 import AddBankTransaction from '@/pages/bank/AddBankTransaction';
 import AuditTrail from '@/pages/audit/AuditTrail';
+import Approvals from '@/pages/Approvals';
 import DataImport from '@/pages/import/DataImport';
 import { useAuthStore, canWrite } from '@/stores/authStore';
 
@@ -59,6 +61,7 @@ export default function App() {
           <Route path="students/:sno" element={<StudentProfile />} />
           <Route path="students/:sno/edit" element={<AdminRoute><EditStudent /></AdminRoute>} />
           <Route path="ledger/:sno" element={<StudentLedger />} />
+          <Route path="ledger/bulk-demand" element={<AdminRoute><BulkFeeDemand /></AdminRoute>} />
           <Route path="ledger/:sno/add-demand" element={<AdminRoute><AddFeeDemand /></AdminRoute>} />
           <Route path="ledger/:sno/add-charge" element={<AdminRoute><AddCharge /></AdminRoute>} />
           <Route path="ledger/:sno/adjust" element={<AdminRoute><LedgerAdjustment /></AdminRoute>} />
@@ -68,6 +71,7 @@ export default function App() {
           <Route path="expenses/tag-from-bank" element={<AdminRoute><TagBankWithdrawals /></AdminRoute>} />
           <Route path="bank" element={<AdminRoute><BankAccount /></AdminRoute>} />
           <Route path="bank/add" element={<AdminRoute><AddBankTransaction /></AdminRoute>} />
+          <Route path="approvals" element={<Approvals />} />
           <Route path="audit" element={<AuditTrail />} />
           <Route path="import" element={<AdminRoute><DataImport /></AdminRoute>} />
         </Route>

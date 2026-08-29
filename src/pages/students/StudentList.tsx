@@ -442,12 +442,13 @@ export default function StudentList() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Students</h1>
-          <div className="flex flex-wrap items-center gap-2 mt-3">
+    <div className="space-y-3">
+      {/* Header — desktop compact */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <h1 className="text-[16px] font-bold text-slate-900 tracking-tight">Students</h1>
+          <span className="text-[11px] text-slate-500">{filteredStudents.length} total</span>
+          <div className="flex items-center gap-1 ml-2">
             {statusChips.map((chip) => {
               const active = statusFilter === chip.value;
               return (
@@ -456,77 +457,76 @@ export default function StudentList() {
                   type="button"
                   onClick={() => updateStatus(active ? 'all' : chip.value)}
                   className={cn(
-                    'inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors cursor-pointer',
+                    'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border transition-colors',
                     active
-                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm shadow-blue-200/50'
-                      : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:text-slate-900'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                   )}
                 >
                   {chip.label}
-                  <span className={active ? 'text-blue-100' : 'text-slate-400'}>{stats[chip.value]}</span>
+                  <span className={active ? 'text-slate-300' : 'text-slate-400'}>{stats[chip.value]}</span>
                 </button>
               );
             })}
           </div>
         </div>
-        <Button onClick={() => navigate('/admissions/new')} className="print:hidden">
-          <Plus size={16} className="mr-2" />
+        <Button size="sm" className="h-7 text-[12px] print:hidden" onClick={() => navigate('/admissions/new')}>
+          <Plus size={12} className="mr-1.5" />
           New Admission
         </Button>
       </div>
 
-      {/* Toolbar */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100/60 p-4 space-y-3 print:hidden">
+      {/* Toolbar — desktop dense */}
+      <div className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-2 print:hidden">
         {/* Row 1: search + actions */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[200px] max-w-[320px]">
-            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="relative flex-1 min-w-[180px] max-w-[280px]">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <Input
               value={search}
               onChange={(e) => updateSearch(e.target.value)}
-              placeholder="Search name, SNO, father, contact, CNIC, address, domicile, course, batch..."
-              className="pl-10"
+              placeholder="Search…"
+              className="pl-7 h-7 text-[12px]"
             />
           </div>
-          <span className="text-sm text-slate-500 whitespace-nowrap">
+          <span className="text-[11px] text-slate-500 whitespace-nowrap">
             {filteredStudents.length} {pluralize(filteredStudents.length, 'student')}
           </span>
           <div className="flex-1" />
           {hasActiveFilters && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              <FilterX size={14} className="mr-1.5" />
-              Clear Filters
+            <Button variant="ghost" size="sm" className="h-6 text-[11px] px-2" onClick={clearFilters}>
+              <FilterX size={11} className="mr-1" />
+              Clear
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={exportCSV}>
-            <Download size={14} className="mr-1.5" />
-            Export CSV
+          <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={exportCSV}>
+            <Download size={11} className="mr-1" />
+            Export
           </Button>
-          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
-            <Upload size={14} className="mr-1.5" />
-            Import CSV
+          <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={() => fileInputRef.current?.click()}>
+            <Upload size={11} className="mr-1" />
+            Import
           </Button>
           <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImportFile} />
-          <Button variant="ghost" size="sm" onClick={downloadTemplate}>
-            <Download size={14} className="mr-1.5" />
+          <Button variant="ghost" size="sm" className="h-6 text-[11px] px-2" onClick={downloadTemplate}>
             Template
           </Button>
-          <Button variant="outline" size="sm" onClick={() => window.print()}>
-            <Printer size={14} className="mr-1.5" />
+          <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={() => window.print()}>
+            <Printer size={11} className="mr-1" />
             Print
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setFiltersOpen((o) => !o)}>
-            <SlidersHorizontal size={14} className="mr-1.5" />
+          <Button variant="ghost" size="sm" className="h-6 text-[11px] px-2" onClick={() => setFiltersOpen((o) => !o)}>
+            <SlidersHorizontal size={11} className="mr-1" />
             Filters
-            {filtersOpen ? <ChevronUp size={14} className="ml-1" /> : <ChevronDown size={14} className="ml-1" />}
+            {filtersOpen ? <ChevronUp size={11} className="ml-1" /> : <ChevronDown size={11} className="ml-1" />}
           </Button>
         </div>
 
-        {/* Row 2: filter selects */}
+        {/* Row 2: filter selects — compact */}
         {filtersOpen && (
-          <div className="flex flex-wrap gap-3 items-center pt-3 border-t border-slate-100/60">
+          <div className="flex flex-wrap gap-1.5 items-center pt-2 border-t border-slate-200">
             <Select value={courseFilter} onValueChange={updateCourse}>
-              <SelectTrigger className="w-[170px]">
+              <SelectTrigger className="w-[140px] h-7 text-[12px]">
                 <SelectValue placeholder="Course" />
               </SelectTrigger>
               <SelectContent>
@@ -538,7 +538,7 @@ export default function StudentList() {
             </Select>
 
             <Select value={programFilter} onValueChange={updateProgram}>
-              <SelectTrigger className="w-[150px]">
+              <SelectTrigger className="w-[130px] h-7 text-[12px]">
                 <SelectValue placeholder="Program" />
               </SelectTrigger>
               <SelectContent>
@@ -550,7 +550,7 @@ export default function StudentList() {
             </Select>
 
             <Select value={batchFilter} onValueChange={updateBatch}>
-              <SelectTrigger className="w-[130px]">
+              <SelectTrigger className="w-[110px] h-7 text-[12px]">
                 <SelectValue placeholder="Batch" />
               </SelectTrigger>
               <SelectContent>
@@ -562,7 +562,7 @@ export default function StudentList() {
             </Select>
 
             <Select value={sessionFilter} onValueChange={updateSession}>
-              <SelectTrigger className="w-[120px]">
+              <SelectTrigger className="w-[100px] h-7 text-[12px]">
                 <SelectValue placeholder="Session" />
               </SelectTrigger>
               <SelectContent>
@@ -574,11 +574,11 @@ export default function StudentList() {
             </Select>
 
             <Select value={semesterFilter} onValueChange={updateSemester}>
-              <SelectTrigger className="w-[120px]">
-                <SelectValue placeholder="Semester" />
+              <SelectTrigger className="w-[110px] h-7 text-[12px]">
+                <SelectValue placeholder="Term" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Semesters</SelectItem>
+                <SelectItem value="all">All Terms</SelectItem>
                 {SEMESTER_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>{s}</SelectItem>
                 ))}
@@ -586,7 +586,7 @@ export default function StudentList() {
             </Select>
 
             <Select value={statusFilter} onValueChange={(v) => updateStatus(v as StatusFilter)}>
-              <SelectTrigger className="w-[130px]">
+              <SelectTrigger className="w-[120px] h-7 text-[12px]">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -594,7 +594,7 @@ export default function StudentList() {
                 <SelectItem value="active">Active</SelectItem>
                 <SelectItem value="struck_off">Struck Off</SelectItem>
                 <SelectItem value="dues">With Dues</SelectItem>
-                <SelectItem value="credit">Credit Balance</SelectItem>
+                <SelectItem value="credit">Credit</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -659,15 +659,15 @@ export default function StudentList() {
         </div>
       )}
 
-      {/* Table */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100/60 overflow-hidden">
+      {/* Table — desktop dense */}
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[40px]">
-                <input type="checkbox" checked={paginatedStudents.length>0 && paginatedStudents.every(s=>selected.has(s.sno))} onChange={toggleSelectAllPage} className="w-4 h-4 accent-blue-600" />
+              <TableHead className="w-[30px]">
+                <input type="checkbox" checked={paginatedStudents.length>0 && paginatedStudents.every(s=>selected.has(s.sno))} onChange={toggleSelectAllPage} className="w-3.5 h-3.5 accent-blue-600" />
               </TableHead>
-              <TableHead className="w-[50px]">Photo</TableHead>
+              <TableHead className="w-[40px]">Photo</TableHead>
               <SortableHead label="SNO" sortKey="sno" activeKey={sortKey} dir={sortDir} onSort={handleSort} className="w-[70px]" />
               <SortableHead label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHead label="Program" sortKey="program" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
@@ -749,17 +749,17 @@ export default function StudentList() {
           </div>
         )}
 
-        {/* Pagination */}
+        {/* Pagination — compact */}
         {sortedStudents.length > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 p-5 border-t border-slate-100/60 print:hidden">
-            <div className="text-sm text-slate-500">
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2 border-t border-slate-200 print:hidden">
+            <div className="text-[11px] text-slate-500">
               Showing {start}–{end} of {sortedStudents.length}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5 mr-2">
-                <span className="text-xs text-slate-500">Rows per page</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex items-center gap-1 mr-1">
+                <span className="text-[11px] text-slate-500">Rows</span>
                 <Select value={pageSize.toString()} onValueChange={updatePageSize}>
-                  <SelectTrigger className="h-8 w-[72px] px-2 text-xs">
+                  <SelectTrigger className="h-6 w-[60px] px-1.5 text-[11px]">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

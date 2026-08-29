@@ -11,7 +11,7 @@ export function StatusBar() {
   const { dot, label } = getSyncIndicator(status);
 
   return (
-    <footer className="h-7 border-t border-slate-100/60 bg-white/60 backdrop-blur-sm flex items-center justify-between px-6 text-xs text-slate-400 shrink-0">
+    <footer className="h-[22px] border-t border-slate-200 bg-[#ECECEC] flex items-center justify-between px-3 text-[11px] text-slate-500 shrink-0">
       <div className="flex items-center gap-4">
         <span>
           {dot} {label}

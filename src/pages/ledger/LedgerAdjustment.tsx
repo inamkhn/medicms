@@ -12,12 +12,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ADJUSTMENT_TYPES } from '@/lib/constants';
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
 import { getStudentsWithBalance } from '@/lib/mockData';
+import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore, useApprovalStore } from '@/stores';
+import { ADJUSTMENT_APPROVAL_THRESHOLD } from '@/stores/approvalStore';
+import type { LedgerTransaction } from '@/types';
 
 export default function LedgerAdjustment() {
   const { sno } = useParams<{ sno: string }>();
   const navigate = useNavigate();
 
-  const student = getStudentsWithBalance().find(s => s.sno.toString() === sno);
+  const storeStudents = useStudentStore(s => s.students);
+  const student = getStudentsWithBalance(storeStudents).find(s => s.sno.toString() === sno);
   const [adjType, setAdjType] = useState('');
   const [amount, setAmount] = useState('');
   const [effect, setEffect] = useState<'reduce' | 'increase'>('reduce');
@@ -36,9 +40,50 @@ export default function LedgerAdjustment() {
     : student.computedBalance + adjAmount;
 
   const handleSubmit = async () => {
-    if (adjAmount <= 0 || !reason.trim()) return;
+    if (adjAmount <= 0 || !adjType || !reason.trim()) return;
+    const user = useAuthStore.getState().user;
+    if (adjAmount > ADJUSTMENT_APPROVAL_THRESHOLD && user?.role !== 'Principal') {
+      useApprovalStore.getState().addRequest({
+        type: 'Adjustment',
+        studentSno: student.sno,
+        studentName: student.name,
+        amount: adjAmount,
+        reason: reason.trim(),
+        details: `${ADJUSTMENT_TYPES.find(a=>a.value===adjType)?.label ?? adjType} · ${formatPKR(adjAmount)} ${effect === 'reduce' ? 'reduce' : 'increase'}${reference ? ` · Ref ${reference}` : ''} — ${reason.trim()}`,
+        requestedBy: user?.name ?? 'Admin',
+        payload: { adjType, adjAmount, effect, reference, reason: reason.trim() },
+      });
+      alert(`Amount exceeds PKR ${ADJUSTMENT_APPROVAL_THRESHOLD.toLocaleString()} — sent for Principal approval.`);
+      return;
+    }
+    if (adjAmount > ADJUSTMENT_APPROVAL_THRESHOLD && user?.role === 'Principal') {
+      const ok = window.confirm(`Amount ${formatPKR(adjAmount)} exceeds threshold — Principal approval. Confirm posting?`);
+      if (!ok) return;
+    }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
+    const nextTxn = getNextTxnNo(useLedgerStore.getState().transactions, student.sno);
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const adjLabel = ADJUSTMENT_TYPES.find(a=>a.value===adjType)?.label ?? adjType;
+    // reduce balance => discount positive; increase => charge (negative discount)
+    const isReduce = effect === 'reduce';
+    const tx: LedgerTransaction = {
+      id: `tx-${student.sno}-${nextTxn}-${Date.now()}`,
+      studentSno: student.sno,
+      txnNo: nextTxn,
+      date: new Date().toISOString().split('T')[0],
+      type: 'Adj',
+      fees: 0,
+      discount: isReduce ? adjAmount : -adjAmount,
+      payment: 0,
+      receiptNo: null,
+      receivedBy: userName,
+      narration: `${adjLabel}${reference ? ` (Ref Txn#${reference})` : ''} — ${reason.trim()}`,
+      createdAt: new Date().toISOString(),
+      createdBy: userName,
+      synced: false,
+    };
+    useLedgerStore.getState().addTransaction(tx);
+    useAuditStore.getState().addLog({ user: userName, action: 'Ledger Adjustment', studentSno: student.sno, details: `${adjLabel} · ${formatPKR(adjAmount)} ${isReduce ? 'reduce' : 'increase'}${reference ? ` · Ref ${reference}` : ''} — ${reason.trim()}` });
     setLoading(false);
     navigate(`/ledger/${student.sno}`);
   };
@@ -72,7 +117,7 @@ export default function LedgerAdjustment() {
         <CardContent className="space-y-4">
           {/* Adjustment Type */}
           <div>
-            <Label>Adjustment Type</Label>
+            <Label>Adjustment Type *</Label>
             <div className="space-y-2 mt-2">
               {ADJUSTMENT_TYPES.map(at => (
                 <label key={at.value} className="flex items-center gap-2 cursor-pointer">
@@ -88,6 +133,7 @@ export default function LedgerAdjustment() {
                 </label>
               ))}
             </div>
+            {!adjType && <p className="text-xs text-red-500 mt-1">Select adjustment type</p>}
           </div>
 
           {/* Amount */}
@@ -185,7 +231,7 @@ export default function LedgerAdjustment() {
 
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
-        <Button onClick={handleSubmit} disabled={loading || adjAmount <= 0 || !reason.trim()}>
+        <Button onClick={handleSubmit} disabled={loading || adjAmount <= 0 || !reason.trim() || !adjType}>
           {loading ? 'Saving...' : 'Save Adjustment Entry'}
         </Button>
       </div>

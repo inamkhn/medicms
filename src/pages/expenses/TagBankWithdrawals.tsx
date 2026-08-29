@@ -10,25 +10,26 @@ import { ArrowLeft, Link2, AlertTriangle, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { MOCK_BANK } from '@/lib/mockData';
-import { MOCK_EXPENSES } from '@/lib/mockData';
 import { formatPKR, formatDate } from '@/lib/utils';
 import { EXPENSE_CATEGORY_OPTIONS } from '@/lib/constants';
+import { useBankStore, useExpenseStore, useAuditStore, useAuthStore } from '@/stores';
 
 export default function TagBankWithdrawals() {
   const navigate = useNavigate();
 
-  // Find withdrawals not linked to any expense
+  // Find withdrawals not linked to any expense — live stores
+  const bankTxs = useBankStore(s => s.transactions);
+  const expenses = useExpenseStore(s => s.expenses);
   const untaggedWithdrawals = useMemo(() => {
-    return MOCK_BANK.filter(
+    return bankTxs.filter(
       (t) => t.withdrawal > 0 && !t.linkedExpenseId && !t.isPersonal
     );
-  }, []);
+  }, [bankTxs]);
 
   // Expenses not linked to any bank transaction
   const unlinkedExpenses = useMemo(() => {
-    return MOCK_EXPENSES.filter((e) => !e.bankTransactionId);
-  }, []);
+    return expenses.filter((e) => !e.bankTransactionId);
+  }, [expenses]);
 
   const [selectedBank, setSelectedBank] = useState<number | null>(null);
   const [selectedExpense, setSelectedExpense] = useState<string | null>(null);
@@ -53,6 +54,29 @@ export default function TagBankWithdrawals() {
 
   const getCategoryLabel = (code: string) =>
     EXPENSE_CATEGORY_OPTIONS.find((c) => c.value === code)?.label ?? code;
+
+  const handleSave = () => {
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const bankState = useBankStore.getState();
+    const expenseState = useExpenseStore.getState();
+    tagged.forEach(({ bankSno, expenseId }) => {
+      const bankTx = bankState.transactions.find(b => b.sno === bankSno);
+      if (bankTx) {
+        // update bank linkedExpenseId
+        useBankStore.setState({ transactions: useBankStore.getState().transactions.map(b => b.sno === bankSno ? { ...b, linkedExpenseId: expenseId } : b) });
+      }
+      const exp = expenseState.expenses.find(e => e.id === expenseId);
+      if (exp) {
+        useExpenseStore.getState().updateExpense(expenseId, { bankTransactionId: String(bankSno) });
+      }
+      useAuditStore.getState().addLog({ user: userName, action: 'Expense Added', details: `Tagged Bank #${bankSno} ↔ Expense ${expenseId} ${exp ? formatPKR(exp.amount) : ''}` });
+    });
+    markPersonal.forEach(sno => {
+      useBankStore.setState({ transactions: useBankStore.getState().transactions.map(b => b.sno === sno ? { ...b, isPersonal: true } : b) });
+      useAuditStore.getState().addLog({ user: userName, action: 'Bank Entry', details: `Marked Bank #${sno} as Personal` });
+    });
+    navigate('/expenses');
+  };
 
   return (
     <div className="w-auto space-y-6">
@@ -248,8 +272,8 @@ export default function TagBankWithdrawals() {
               </thead>
               <tbody>
                 {tagged.map((tg) => {
-                  const bank = MOCK_BANK.find((b) => b.sno === tg.bankSno);
-                  const expense = MOCK_EXPENSES.find((e) => e.id === tg.expenseId);
+                  const bank = bankTxs.find((b) => b.sno === tg.bankSno);
+                  const expense = expenses.find((e) => e.id === tg.expenseId);
                   return (
                     <tr key={`${tg.bankSno}-${tg.expenseId}`} className="border-b border-slate-100 last:border-0">
                       <td className="py-2">#{tg.bankSno}</td>
@@ -278,7 +302,7 @@ export default function TagBankWithdrawals() {
           <Button variant="outline" onClick={() => navigate('/expenses')}>
             Cancel
           </Button>
-          <Button onClick={() => navigate('/expenses')}>
+          <Button onClick={handleSave}>
             Save {tagged.length + markPersonal.length} Changes
           </Button>
         </div>

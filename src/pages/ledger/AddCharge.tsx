@@ -12,12 +12,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CHARGE_TYPES } from '@/lib/constants';
 import { formatPKR } from '@/lib/utils';
 import { getStudentsWithBalance } from '@/lib/mockData';
+import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
+import type { LedgerTransaction, TransactionType } from '@/types';
 
 export default function AddCharge() {
   const { sno } = useParams<{ sno: string }>();
   const navigate = useNavigate();
 
-  const student = getStudentsWithBalance().find(s => s.sno.toString() === sno);
+  const storeStudents = useStudentStore(s => s.students);
+  const student = getStudentsWithBalance(storeStudents).find(s => s.sno.toString() === sno);
   const [chargeType, setChargeType] = useState<string>(CHARGE_TYPES[0].value);
   const [amount, setAmount] = useState('2700');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
@@ -40,8 +43,35 @@ export default function AddCharge() {
 
   const handleSubmit = async () => {
     if (chargeAmount <= 0) return;
+    const allTx = useLedgerStore.getState().transactions;
+    if (receiptNo.trim()) {
+      const dup = allTx.some(t => t.receiptNo && t.receiptNo.toLowerCase() === receiptNo.trim().toLowerCase());
+      if (dup) { alert(`Receipt No. ${receiptNo.trim()} already exists`); return; }
+    }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
+    const nextTxn = getNextTxnNo(allTx, student.sno);
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    // Map charge type to valid TransactionType: Exam/CT keep, others -> Adj
+    const mapType: Record<string, TransactionType> = { Exam: 'Exam', CT: 'CT', Annual: 'Adj', Late: 'Adj', Library: 'Adj', Equipment: 'Adj', Other: 'Adj' };
+    const txType: TransactionType = mapType[chargeType] ?? 'Adj';
+    const tx: LedgerTransaction = {
+      id: `tx-${student.sno}-${nextTxn}-${Date.now()}`,
+      studentSno: student.sno,
+      txnNo: nextTxn,
+      date,
+      type: txType,
+      fees: 0,
+      discount: -Math.abs(chargeAmount),
+      payment: 0,
+      receiptNo: receiptNo.trim() || null,
+      receivedBy: userName,
+      narration: narration.trim() || CHARGE_TYPES.find(c=>c.value===chargeType)?.defaultNarration || chargeType,
+      createdAt: new Date().toISOString(),
+      createdBy: userName,
+      synced: false,
+    };
+    useLedgerStore.getState().addTransaction(tx);
+    useAuditStore.getState().addLog({ user: userName, action: 'Charge Added', studentSno: student.sno, details: `${CHARGE_TYPES.find(c=>c.value===chargeType)?.label} · ${formatPKR(chargeAmount)}${receiptNo ? ` · Rcpt ${receiptNo}` : ''} — ${tx.narration}` });
     setLoading(false);
     navigate(`/ledger/${student.sno}`);
   };

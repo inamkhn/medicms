@@ -26,6 +26,7 @@ const MAIN_ITEMS: NavItem[] = [
 
 const FINANCE_ITEMS: NavItem[] = [
   { to: '/ledger', label: 'Fee Ledger', icon: BookOpen },
+  { to: '/ledger/bulk-demand', label: 'Bulk Demand', icon: Receipt, adminOnly: true },
   { to: '/payments/record', label: 'Payments', icon: CreditCard, shortcut: 'Ctrl+P' },
   { to: '/fee-templates', label: 'Fee Templates', icon: Receipt, adminOnly: true },
 ];
@@ -37,6 +38,7 @@ const OPERATIONS_ITEMS: NavItem[] = [
 
 const REPORTS_ITEMS: NavItem[] = [
   { to: '/reports', label: 'Reports', icon: FileText },
+  { to: '/approvals', label: 'Approvals', icon: History },
   { to: '/audit', label: 'Audit Trail', icon: History },
 ];
 
@@ -48,44 +50,27 @@ const SYSTEM_ITEMS: NavItem[] = [
 function NavSection({ title, items }: { title: string; items: NavItem[] }) {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'Admin';
-  
   const visibleItems = items.filter(item => !item.adminOnly || isAdmin);
-  
   if (visibleItems.length === 0) return null;
-  
   return (
-    <div className="mb-5">
-      <div className="px-5 mb-2 text-[11px] font-semibold text-slate-400 uppercase tracking-widest">
-        {title}
+    <div className="mb-3">
+      <div className="px-2 mb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-widest text-center">
+        {title.slice(0,3)}
       </div>
-      <div className="px-3 space-y-0.5">
-        {visibleItems.map(({ to, label, icon: Icon, shortcut }) => (
+      <div className="px-1.5 space-y-1">
+        {visibleItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
+            title={`${label}`}
             className={({ isActive }) =>
               cn(
-                'flex items-center justify-between px-3 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 group relative',
-                isActive
-                  ? 'bg-blue-50 text-blue-600'
-                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+                'flex items-center justify-center w-9 h-9 mx-auto rounded-lg transition-colors relative group',
+                isActive ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
               )
             }
           >
-            {({ isActive }) => (
-              <>
-                {isActive && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 bg-blue-500 rounded-r-full" />
-                )}
-                <div className="flex items-center gap-3">
-                  <Icon size={18} className={cn(isActive ? 'text-blue-500' : 'text-slate-400 group-hover:text-slate-600')} />
-                  <span>{label}</span>
-                </div>
-                {shortcut && (
-                  <span className="text-[11px] text-slate-300">{shortcut}</span>
-                )}
-              </>
-            )}
+            <Icon size={16} />
           </NavLink>
         ))}
       </div>
@@ -95,27 +80,24 @@ function NavSection({ title, items }: { title: string; items: NavItem[] }) {
 
 export function Sidebar() {
   const { user } = useAuthStore();
-  
+  const initials = user?.name ? user.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase() : 'U';
   return (
-    <aside className="w-64 border-r border-slate-100 bg-white flex flex-col py-5 shrink-0">
+    <aside className="w-20 border-r border-slate-200 bg-[#FAFAFA] flex flex-col py-3 shrink-0">
       <nav className="flex-1 overflow-y-auto">
         <NavSection title="Main" items={MAIN_ITEMS} />
+        <div className="mx-3 my-2 h-px bg-slate-200" />
         <NavSection title="Finance" items={FINANCE_ITEMS} />
+        <div className="mx-3 my-2 h-px bg-slate-200" />
         <NavSection title="Operations" items={OPERATIONS_ITEMS} />
+        <div className="mx-3 my-2 h-px bg-slate-200" />
         <NavSection title="Reports" items={REPORTS_ITEMS} />
+        <div className="mx-3 my-2 h-px bg-slate-200" />
         <NavSection title="System" items={SYSTEM_ITEMS} />
       </nav>
-      
-      {/* User Info & Logout */}
-      <div className="border-t border-slate-100 px-5 py-4 mt-auto">
-        <div className="text-sm font-medium text-slate-700">{user?.name}</div>
-        <div className="text-xs text-slate-400 mt-0.5">{user?.role} role</div>
-        <button
-          onClick={() => useAuthStore.getState().logout()}
-          className="mt-3 flex items-center gap-2 text-sm text-red-500 hover:text-red-600 transition-colors"
-        >
+      <div className="border-t border-slate-200 pt-3 pb-1 flex flex-col items-center gap-2">
+        <div className="w-7 h-7 bg-slate-200 rounded-full flex items-center justify-center text-[10px] font-semibold text-slate-600" title={`${user?.name} — ${user?.role}`}>{initials}</div>
+        <button onClick={() => useAuthStore.getState().logout()} title="Sign out" className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-red-500 transition-colors">
           <LogOut size={14} />
-          Logout
         </button>
       </div>
     </aside>

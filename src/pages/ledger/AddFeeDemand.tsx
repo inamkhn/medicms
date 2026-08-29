@@ -19,8 +19,8 @@ import {
 import { getSubCourseDef } from '@/lib/constants';
 import { formatPKR, computeFeeTemplateTotal, getFeeWarnings, getTermLabel } from '@/lib/utils';
 import { getStudentsWithBalance, MOCK_FEE_TEMPLATES } from '@/lib/mockData';
-import { useStudentStore } from '@/stores';
-import type { Semester } from '@/types';
+import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
+import type { Semester, LedgerTransaction } from '@/types';
 
 export default function AddFeeDemand() {
   const { sno } = useParams<{ sno: string }>();
@@ -39,10 +39,11 @@ export default function AddFeeDemand() {
     if (subDef && student && subDef.sub.terms.includes(student.semester)) return student.semester;
     return subDef?.sub.terms[0] ?? '1st';
   });
-  const [session, setSession] = useState('2018');
+  const [session, setSession] = useState(() => String(student?.session ?? new Date().getFullYear()));
   const [narration, setNarration] = useState('This is Next Promote Semester Fees');
   const [updateSemester, setUpdateSemester] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   if (!student) {
     return <div className="p-8 text-center text-slate-400">Student not found (SNO: {sno})</div>;
@@ -67,8 +68,35 @@ export default function AddFeeDemand() {
   }
 
   const handleSubmit = async () => {
+    setError('');
+    if (!template) { setError('No fee template found for this semester — cannot create demand.'); return; }
+    const allTx = useLedgerStore.getState().transactions;
+    const duplicate = allTx.some(t => t.studentSno === student.sno && t.type === 'Demand' && t.semester === semester && String(t.session) === String(session));
+    if (duplicate) { setError(`Demand already exists for ${getTermLabel(subDef?.course.system ?? 'semester', semester)} — Session ${session}.`); return; }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
+    const nextTxn = getNextTxnNo(allTx, student.sno);
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const tx: LedgerTransaction = {
+      id: `tx-${student.sno}-${nextTxn}-${Date.now()}`,
+      studentSno: student.sno,
+      txnNo: nextTxn,
+      date: new Date().toISOString().split('T')[0],
+      type: 'Demand',
+      semester,
+      session: parseInt(session, 10) || undefined,
+      fees: total,
+      discount: 0,
+      payment: 0,
+      receiptNo: null,
+      receivedBy: null,
+      narration,
+      createdAt: new Date().toISOString(),
+      createdBy: userName,
+      synced: false,
+    };
+    useLedgerStore.getState().addTransaction(tx);
+    if (updateSemester) useStudentStore.getState().updateStudent(student.sno, { semester });
+    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', studentSno: student.sno, details: `${getTermLabel(subDef?.course.system ?? 'semester', semester)} · Session ${session} · ${formatPKR(total)}${narration ? ` — ${narration}` : ''}` });
     setLoading(false);
     navigate(`/ledger/${student.sno}`);
   };
@@ -245,10 +273,14 @@ export default function AddFeeDemand() {
         </CardContent>
       </Card>
 
+      {error && (
+        <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-600">{error}</div>
+      )}
+
       {/* Actions */}
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
-        <Button onClick={handleSubmit} disabled={loading}>
+        <Button onClick={handleSubmit} disabled={loading || !template}>
           {loading ? 'Adding...' : 'Add Demand to Ledger'}
         </Button>
       </div>
