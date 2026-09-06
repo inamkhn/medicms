@@ -24,11 +24,17 @@ export default function Settings() {
   const [newStart, setNewStart] = useState('');
   const [newEnd, setNewEnd] = useState('');
   const [newAssigned, setNewAssigned] = useState('Admin Khalid');
-  const [instituteName, setInstituteName] = useState(INSTITUTE_INFO.name);
-  const [instituteAddress, setInstituteAddress] = useState(INSTITUTE_INFO.location);
-  const [institutePhone, setInstitutePhone] = useState(INSTITUTE_INFO.phone);
-  const [bankName, setBankName] = useState(BANK_INFO.name);
-  const [accountNo, setAccountNo] = useState(BANK_INFO.accountNo);
+  const instituteName = useSettingsStore((s) => s.instituteName);
+  const instituteAddress = useSettingsStore((s) => s.instituteAddress);
+  const institutePhone = useSettingsStore((s) => s.institutePhone);
+  const bankName = useSettingsStore((s) => s.bankName);
+  const accountNo = useSettingsStore((s) => s.accountNo);
+  const paperSize = useSettingsStore((s) => s.paperSize);
+  const setInstitute = useSettingsStore((s) => s.setInstitute);
+  const setBank = useSettingsStore((s) => s.setBank);
+  const setPaperSize = useSettingsStore((s) => s.setPaperSize);
+  void INSTITUTE_INFO;
+  void BANK_INFO;
   const [serverUrl, setServerUrl] = useState('https://medicms-server.example.com');
   const [serverKey, setServerKey] = useState('••••••••••••');
   const [testingConnection, setTestingConnection] = useState(false);
@@ -167,16 +173,17 @@ export default function Settings() {
         <CardContent className="space-y-4">
           <div>
             <Label>Name</Label>
-            <Input value={instituteName} onChange={(e) => setInstituteName(e.target.value)} />
+            <Input value={instituteName} onChange={(e) => setInstitute(e.target.value, instituteAddress, institutePhone)} />
           </div>
           <div>
             <Label>Address</Label>
-            <Input value={instituteAddress} onChange={(e) => setInstituteAddress(e.target.value)} />
+            <Input value={instituteAddress} onChange={(e) => setInstitute(instituteName, e.target.value, institutePhone)} />
           </div>
           <div>
             <Label>Phone</Label>
-            <Input value={institutePhone} onChange={(e) => setInstitutePhone(e.target.value)} />
+            <Input value={institutePhone} onChange={(e) => setInstitute(instituteName, instituteAddress, e.target.value)} />
           </div>
+          <p className="text-xs text-slate-400">Saved automatically — used on all printed receipts.</p>
         </CardContent>
       </Card>
 
@@ -189,11 +196,11 @@ export default function Settings() {
         <CardContent className="space-y-4">
           <div>
             <Label>Bank Name</Label>
-            <Input value={bankName} onChange={(e) => setBankName(e.target.value)} />
+            <Input value={bankName} onChange={(e) => setBank(e.target.value, accountNo)} />
           </div>
           <div>
             <Label>Account Number</Label>
-            <Input value={accountNo} onChange={(e) => setAccountNo(e.target.value)} />
+            <Input value={accountNo} onChange={(e) => setBank(bankName, e.target.value)} />
           </div>
         </CardContent>
       </Card>
@@ -225,6 +232,8 @@ export default function Settings() {
           <Button variant="outline" size="sm" onClick={()=>{
             const s=parseInt(newStart,10), e=parseInt(newEnd,10);
             if(!newBookNo.trim() || isNaN(s) || isNaN(e) || s>=e) { alert('Enter Book No and valid start < end'); return; }
+            if(books.some((b)=>b.bookNo.toLowerCase()===newBookNo.trim().toLowerCase())) { alert('Book No already exists.'); return; }
+            if(books.some((b)=> s<=b.end && e>=b.start)) { alert('Range overlaps an existing book — use a non-overlapping range.'); return; }
             addBook({ bookNo: newBookNo.trim(), start: s, end: e, assignedTo: newAssigned.trim() || 'Admin', isActive: true });
             setNewBookNo(''); setNewStart(''); setNewEnd('');
           }}>Add Book</Button>
@@ -273,16 +282,13 @@ export default function Settings() {
             </Button>
           </div>
           <div>
-            <Label>Receipt Paper Size</Label>
+            <Label>Receipt Paper Size (default for all receipts)</Label>
             <div className="flex gap-4 mt-2">
-              <label className="flex items-center gap-2">
-                <input type="radio" name="paper" /> A4
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="paper" checked={paperSize === 'A4'} onChange={() => setPaperSize('A4')} /> A4
               </label>
-              <label className="flex items-center gap-2">
-                <input type="radio" name="paper" /> A5
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="radio" name="paper" defaultChecked /> Thermal 80mm
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="paper" checked={paperSize === '80mm'} onChange={() => setPaperSize('80mm')} /> Thermal 80mm
               </label>
             </div>
           </div>

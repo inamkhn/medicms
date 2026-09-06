@@ -20,7 +20,7 @@ import { formatPKR, formatDate, formatBalanceDisplay } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
 import { getStudentsWithBalance } from '@/lib/mockData';
 import { canWrite } from '@/stores/authStore';
-import { useAuthStore, useStudentStore, useLedgerStore } from '@/stores';
+import { useAuthStore, useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 import type { TransactionType } from '@/types';
 
 const TYPE_COLORS: Record<TransactionType, string> = {
@@ -68,10 +68,21 @@ export default function StudentLedger() {
   const liveBalance = totalDemanded + totalCharges - totalDiscount - totalPaid;
   const balanceDisplay = formatBalanceDisplay(liveBalance);
 
+  const instituteName = useSettingsStore((s) => s.instituteName);
+  const instituteAddress = useSettingsStore((s) => s.instituteAddress);
+  const institutePhone = useSettingsStore((s) => s.institutePhone);
+
   return (
     <div className="space-y-3">
+      {/* Print-only statement header */}
+      <div className="hidden print:block print-area text-center text-black">
+        <div className="font-bold text-lg">{instituteName}</div>
+        <div className="text-sm">{instituteAddress} · {institutePhone}</div>
+        <div className="font-bold mt-1">FEE STATEMENT — {student.name} (SNO:{student.sno})</div>
+        <div className="text-sm">{getSubCourseDef(student.program).sub.label} · {student.batch} · Session {student.session} · Balance {formatPKR(liveBalance)}</div>
+      </div>
       {/* Header — compact */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 print:hidden">
         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate(-1)}>
           <ArrowLeft size={14} />
         </Button>
@@ -116,7 +127,7 @@ export default function StudentLedger() {
       </Card>
 
       {/* Ledger Table */}
-      <Card>
+      <Card className="print-area">
         <Table>
           <TableHeader>
             <TableRow>
@@ -184,6 +195,10 @@ export default function StudentLedger() {
           <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/payments/record?sno=${student.sno}`)}>
             <CreditCard size={12} className="mr-1.5" />
             Payment
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
+            <Plus size={12} className="mr-1.5" />
+            Promote
           </Button>
         </div>
       )}

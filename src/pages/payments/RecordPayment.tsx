@@ -12,10 +12,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
+import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
 import { getStudentsWithBalance } from '@/lib/mockData';
-import { useAuthStore, useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useSettingsStore, useReceiptBookStore, useBankStore, getNextBankSno, useApprovalStore } from '@/stores';
+import { useAuthStore, useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useSettingsStore, useReceiptBookStore, useBankStore, getNextBankSno } from '@/stores';
 import { FEE_RULES, getSubCourseDef, BANK_INFO } from '@/lib/constants';
-import { DISCOUNT_APPROVAL_THRESHOLD } from '@/stores/approvalStore';
 import type { StudentWithBalance, LedgerTransaction } from '@/types';
 
 type Step = 'search' | 'confirm' | 'payment' | 'success';
@@ -102,46 +102,9 @@ export default function RecordPayment() {
     const num = parseInt(receiptNo.replace('#',''),10);
     const book = receiptBooks.find(b => b.isActive && num >= b.start && num <= b.end);
     if (!book) { alert(`Receipt ${receiptNo} not in any active book range (${receiptBooks.map(b=>`${b.bookNo}:${b.start}-${b.end}`).join(', ')})`); return; }
-    // Discount approval — >5k requires Principal
-    if (discountAmount > DISCOUNT_APPROVAL_THRESHOLD && user?.role !== 'Principal') {
-      const userName = user?.name ?? 'Admin';
-      useApprovalStore.getState().addRequest({
-        type: 'Discount',
-        studentSno: selectedStudent.sno,
-        studentName: selectedStudent.name,
-        amount: paymentAmount,
-        discountAmount,
-        receiptNo: receiptNo.trim(),
-        reason: discountReason.trim(),
-        details: `Payment ${formatPKR(paymentAmount)} Discount ${formatPKR(discountAmount)} · Rcpt ${receiptNo.trim()} · ${paymentMode} — ${discountReason.trim()}`,
-        requestedBy: userName,
-        payload: { paymentAmount, discountAmount, discountReason: discountReason.trim(), receiptNo: receiptNo.trim(), paymentMode, bankRef: bankRef.trim(), narration: narration.trim() },
-      });
-      alert(`Discount ${formatPKR(discountAmount)} exceeds PKR ${DISCOUNT_APPROVAL_THRESHOLD.toLocaleString()} — sent for Principal approval. Payment not yet posted.`);
-      return;
-    }
-    if (discountAmount > DISCOUNT_APPROVAL_THRESHOLD && user?.role === 'Principal') {
-      const ok = window.confirm(`Discount ${formatPKR(discountAmount)} exceeds threshold — Principal approval. Confirm posting?`);
-      if (!ok) return;
-    }
+    // Admin-only: direct post with confirm for large over-payment
     if (newBalance < FEE_RULES.creditGuardThreshold) {
-      if (user?.role !== 'Principal') {
-        useApprovalStore.getState().addRequest({
-          type: 'OverPayment',
-          studentSno: selectedStudent.sno,
-          studentName: selectedStudent.name,
-          amount: paymentAmount,
-          discountAmount,
-          receiptNo: receiptNo.trim(),
-          reason: `Over-payment would go to ${formatPKR(newBalance)} (below ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))})`,
-          details: `Over-payment guard — ${formatPKR(paymentAmount)} discount ${formatPKR(discountAmount)} receipt ${receiptNo.trim()}`,
-          requestedBy: user?.name ?? 'Admin',
-          payload: { paymentAmount, discountAmount, discountReason: discountReason.trim(), receiptNo: receiptNo.trim(), paymentMode, bankRef: bankRef.trim(), narration: narration.trim() },
-        });
-        alert('Over-payment below -PKR 10,000 — sent for Principal approval.');
-        return;
-      }
-      const ok = window.confirm(`Over-payment guard: balance would go to ${formatPKR(newBalance)} (below ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))}). Continue with Principal approval?`);
+      const ok = window.confirm(`Over-payment guard: balance would go to ${formatPKR(newBalance)} (below ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))}). Continue?`);
       if (!ok) return;
     }
     setLoading(true);
@@ -418,7 +381,7 @@ export default function RecordPayment() {
                 </div>
                 {newBalance < FEE_RULES.creditGuardThreshold && (
                   <div className="mt-3 p-2 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
-                    ⚠ Over-payment guard: balance cannot go below {formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))} without Principal approval.
+                    ⚠ Over-payment guard: balance will go below {formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))} — please confirm.
                   </div>
                 )}
               </div>
@@ -441,34 +404,92 @@ export default function RecordPayment() {
 
       {/* Step: Success */}
       {step === 'success' && selectedStudent && (
-        <Card>
-          <CardContent className="py-8 text-center">
-            <div className="text-6xl mb-4">✅</div>
-            <h2 className="text-xl font-bold mb-2">Payment Recorded</h2>
-            <div className="space-y-1 text-sm text-slate-600 mb-6">
-              <div>Student: {selectedStudent.name} (SNO: {selectedStudent.sno})</div>
-              <div>Amount Paid: {formatPKR(paymentAmount)}</div>
-              {discountAmount > 0 && <div>Discount: {formatPKR(discountAmount)}</div>}
-              <div>Receipt: {receiptNo || 'N/A'}</div>
-              <div className="font-medium text-green-600">
-                New Balance: {formatPKR(newBalance)}
-              </div>
-            </div>
-            <div className="flex justify-center gap-3">
-              <Button variant="outline" onClick={() => { setStep('search'); setSelectedStudent(null); setAmount(''); setDiscount('0'); setDiscountReason(''); setReceiptNo(''); setNarration(''); setPaymentMode('Cash'); setBankRef(''); }}>
-                Record Another
-              </Button>
-              <Button variant="outline" onClick={() => window.print()}>
-                <Printer size={16} className="mr-1" />
-                Print Receipt
-              </Button>
-              <Button onClick={() => navigate('/students')}>
-                Done
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <SuccessReceipt
+          student={selectedStudent}
+          paymentAmount={paymentAmount}
+          discountAmount={discountAmount}
+          discountReason={discountReason}
+          receiptNo={receiptNo}
+          paymentMode={paymentMode}
+          bankRef={bankRef}
+          prevBalance={balance}
+          newBalance={newBalance}
+          onAnother={() => { setStep('search'); setSelectedStudent(null); setAmount(''); setDiscount('0'); setDiscountReason(''); setReceiptNo(''); setNarration(''); setPaymentMode('Cash'); setBankRef(''); }}
+          onDone={() => navigate('/students')}
+        />
       )}
+    </div>
+  );
+}
+
+function SuccessReceipt(props: {
+  student: StudentWithBalance;
+  paymentAmount: number;
+  discountAmount: number;
+  discountReason: string;
+  receiptNo: string;
+  paymentMode: string;
+  bankRef: string;
+  prevBalance: number;
+  newBalance: number;
+  onAnother: () => void;
+  onDone: () => void;
+}) {
+  const { student } = props;
+  const paperDefault = useSettingsStore((s) => s.paperSize);
+  const [size, setSize] = useState<ReceiptSize>(paperDefault);
+  const institute = {
+    name: useSettingsStore((s) => s.instituteName),
+    address: useSettingsStore((s) => s.instituteAddress),
+    phone: useSettingsStore((s) => s.institutePhone),
+  };
+  const userName = useAuthStore((s) => s.user?.name) ?? 'Admin';
+  const subLabel = (() => { try { return getSubCourseDef(student.program).sub.label; } catch { return student.program; } })();
+  return (
+    <div className="space-y-4">
+      <Card className="print:hidden">
+        <CardContent className="py-6 text-center">
+          <div className="text-5xl mb-3">✅</div>
+          <h2 className="text-xl font-bold mb-1">Payment Recorded</h2>
+          <div className="text-sm text-slate-600">
+            {student.name} (SNO:{student.sno}) · {formatPKR(props.paymentAmount)}
+            {props.discountAmount > 0 && <span> + Disc {formatPKR(props.discountAmount)}</span>}
+            {' '}· Receipt {props.receiptNo || 'N/A'} · Balance {formatPKR(props.newBalance)}
+          </div>
+          <div className="flex justify-center gap-2 mt-4">
+            <Button variant={size === '80mm' ? 'default' : 'outline'} size="sm" onClick={() => setSize('80mm')}>80mm</Button>
+            <Button variant={size === 'A4' ? 'default' : 'outline'} size="sm" onClick={() => setSize('A4')}>A4</Button>
+            <Button size="sm" onClick={() => window.print()}>
+              <Printer size={14} className="mr-1" /> Print Receipt
+            </Button>
+          </div>
+          <div className="flex justify-center gap-2 mt-4">
+            <Button variant="outline" onClick={props.onAnother}>Record Another</Button>
+            <Button onClick={props.onDone}>Done</Button>
+          </div>
+        </CardContent>
+      </Card>
+      <div className="print-area">
+        <ReceiptDoc
+          size={size}
+          institute={institute}
+          studentName={student.name}
+          studentSno={student.sno}
+          programLabel={subLabel}
+          batchLabel={student.batch}
+          sessionLabel={String(student.session)}
+          receiptNo={props.receiptNo || 'N/A'}
+          date={new Date().toISOString().split('T')[0]}
+          payment={props.paymentAmount}
+          discount={props.discountAmount}
+          discountReason={props.discountReason}
+          mode={props.paymentMode}
+          bankRef={props.bankRef}
+          prevBalance={props.prevBalance}
+          newBalance={props.newBalance}
+          receivedBy={userName}
+        />
+      </div>
     </div>
   );
 }

@@ -290,6 +290,12 @@ export default function StudentProfile() {
                 <CreditCard size={14} className="mr-1.5" />
                 Record Payment
               </Button>
+              {canEdit && (
+                <Button size="sm" className="w-full" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
+                  <Plus size={14} className="mr-1.5" />
+                  Promote to Next Semester
+                </Button>
+              )}
 
               {canEdit && (
                 <div className="grid grid-cols-2 gap-2.5">

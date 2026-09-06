@@ -17,7 +17,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { getSubCourseDef } from '@/lib/constants';
-import { formatPKR, computeFeeTemplateTotal, getFeeWarnings, getTermLabel } from '@/lib/utils';
+import { formatPKR, getFeeWarnings, getTermLabel } from '@/lib/utils';
+import { splitFee, getPromotionFee } from '@/lib/promotion';
 import { getStudentsWithBalance, MOCK_FEE_TEMPLATES } from '@/lib/mockData';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import type { Semester, LedgerTransaction } from '@/types';
@@ -49,12 +50,14 @@ export default function AddFeeDemand() {
     return <div className="p-8 text-center text-slate-400">Student not found (SNO: {sno})</div>;
   }
 
-  // Find matching template
+  // Find matching template; fall back to locked admission fee
   const template = MOCK_FEE_TEMPLATES.find(
     t => t.program === student.program && t.course === student.course && t.semester === semester
   );
 
-  const total = template ? computeFeeTemplateTotal(template) : 0;
+  const templateSplit = template ? splitFee(template) : { full: 0, recurring: 0, oneTime: 0 };
+  const lockedFee = getPromotionFee(student);
+  const total = template ? templateSplit.full : lockedFee;
 
   // Collect warnings
   const warnings: string[] = [];
@@ -69,7 +72,7 @@ export default function AddFeeDemand() {
 
   const handleSubmit = async () => {
     setError('');
-    if (!template) { setError('No fee template found for this semester — cannot create demand.'); return; }
+    if (!template && lockedFee <= 0) { setError('No fee template or locked admission fee found for this semester — cannot create demand.'); return; }
     const allTx = useLedgerStore.getState().transactions;
     const duplicate = allTx.some(t => t.studentSno === student.sno && t.type === 'Demand' && t.semester === semester && String(t.session) === String(session));
     if (duplicate) { setError(`Demand already exists for ${getTermLabel(subDef?.course.system ?? 'semester', semester)} — Session ${session}.`); return; }
@@ -280,7 +283,7 @@ export default function AddFeeDemand() {
       {/* Actions */}
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
-        <Button onClick={handleSubmit} disabled={loading || !template}>
+        <Button onClick={handleSubmit} disabled={loading || total <= 0}>
           {loading ? 'Adding...' : 'Add Demand to Ledger'}
         </Button>
       </div>

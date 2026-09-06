@@ -23,10 +23,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { COURSES, SEMESTER_OPTIONS, BATCH_OPTIONS, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
+import { COURSES, SEMESTER_OPTIONS, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
 import { formatPKR, computeFeeTemplateTotal, getFeeWarnings, getTermLabel } from '@/lib/utils';
 import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
-import type { FeeTemplate, ProgramCode, Semester, BatchName, CourseCode } from '@/types';
+import { useBatchStore } from '@/stores/batchStore';
+import type { FeeTemplate, ProgramCode, Semester, CourseCode } from '@/types';
 
 type View = 'list' | 'edit';
 
@@ -183,11 +184,12 @@ export default function FeeTemplates() {
 
 // --- Fee Template Editor ---
 function FeeTemplateEditor({ template, onBack }: { template: FeeTemplate | null; onBack: () => void }) {
+  const allBatches = useBatchStore((s) => s.batches);
   const [form, setForm] = useState({
     course: (template?.course ?? '') as CourseCode | '',
     program: (template?.program ?? '') as ProgramCode | '',
     semester: (template?.semester ?? '1st') as Semester,
-    batch: (template?.batch ?? '17th Batch') as BatchName,
+    batch: (template?.batch ?? '') as string,
     session: template?.session ?? 2026,
     admissionFee: template?.admissionFee ?? 20000,
     tuitionFee: template?.tuitionFee ?? 20000,
@@ -290,11 +292,19 @@ function FeeTemplateEditor({ template, onBack }: { template: FeeTemplate | null;
               </Select>
             </div>
             <div>
-              <Label>Batch</Label>
-              <Select value={form.batch} onValueChange={(v) => setForm({ ...form, batch: v as BatchName })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Label>Batch (per program)</Label>
+              <Select
+                value={form.batch}
+                onValueChange={(v) => setForm({ ...form, batch: v })}
+                disabled={!form.program}
+              >
+                <SelectTrigger><SelectValue placeholder={form.program ? 'Select batch' : 'Select program first'} /></SelectTrigger>
                 <SelectContent>
-                  {BATCH_OPTIONS.map(b => (<SelectItem key={b} value={b}>{b}</SelectItem>))}
+                  {allBatches
+                    .filter((b) => !form.program || b.program === form.program)
+                    .map((b) => (
+                      <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>

@@ -38,14 +38,6 @@ export default function Login() {
         role: 'Admin',
       });
       navigate('/dashboard');
-    } else if (username === 'principal' && password === 'principal') {
-      login({
-        id: '2',
-        username: 'principal',
-        name: 'Principal',
-        role: 'Principal',
-      });
-      navigate('/dashboard');
     } else {
       setError('Invalid username or password');
     }
@@ -127,8 +119,8 @@ export default function Login() {
               <span className="font-mono text-xs text-slate-600">admin / admin</span>
             </div>
             <div className="flex justify-between">
-              <span>Principal</span>
-              <span className="font-mono text-xs text-slate-600">principal / principal</span>
+              <span>Admin access only</span>
+              <span className="font-mono text-xs text-slate-600">single role</span>
             </div>
           </div>
         </div>

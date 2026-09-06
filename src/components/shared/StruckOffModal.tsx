@@ -90,7 +90,7 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
                 <Input
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  placeholder="e.g. Fee cleared — student reinstated by Principal"
+                  placeholder="e.g. Fee cleared — student reinstated by Admin"
                   className="mt-2"
                 />
                 {!reason.trim() && (

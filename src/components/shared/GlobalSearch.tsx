@@ -25,7 +25,7 @@ const ACTIONS: { id: string; label: string; subtitle: string; to: string; icon: 
   { id: 'bulk-demand', label: 'Bulk Fee Demand', subtitle: 'Promote batch', to: '/ledger/bulk-demand', icon: FileText },
   { id: 'students', label: 'Go to Students', subtitle: 'List & filters', to: '/students', icon: Users },
   { id: 'reports', label: 'Go to Reports', subtitle: '16 reports', to: '/reports', icon: FileText, shortcut: 'Ctrl+D' },
-  { id: 'approvals', label: 'Go to Approvals', subtitle: 'Discount & adjustment queue', to: '/approvals', icon: History },
+  { id: 'batches', label: 'Go to Batches', subtitle: 'Per-program batches', to: '/batches', icon: History },
   { id: 'bank', label: 'Go to Bank', subtitle: 'Account & import', to: '/bank', icon: Building2 },
   { id: 'expenses', label: 'Go to Expenses', subtitle: 'Budget vs actual', to: '/expenses', icon: FileText },
   { id: 'dashboard', label: 'Go to Dashboard', subtitle: 'Live stats', to: '/dashboard', icon: LayoutDashboard },

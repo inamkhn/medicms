@@ -4,19 +4,21 @@
 
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertTriangle, CheckCircle2, Users } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { COURSES, BATCH_OPTIONS, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
-import { formatPKR, computeFeeTemplateTotal, getTermLabel } from '@/lib/utils';
+import { COURSES, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
+import { formatPKR, getTermLabel } from '@/lib/utils';
+import { splitFee, getPromotionFee } from '@/lib/promotion';
 import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
+import { useBatchStore } from '@/stores/batchStore';
 import { getStudentsWithBalance } from '@/lib/mockData';
-import type { CourseCode, ProgramCode, Semester, BatchName } from '@/types';
+import type { CourseCode, ProgramCode, Semester } from '@/types';
 import type { LedgerTransaction } from '@/types';
 
 export default function BulkFeeDemand() {
@@ -24,7 +26,7 @@ export default function BulkFeeDemand() {
   const students = useStudentStore(s => s.students);
   const [course, setCourse] = useState<CourseCode | ''>('');
   const [program, setProgram] = useState<ProgramCode | ''>('');
-  const [batch, setBatch] = useState<BatchName | ''>('');
+  const [batch, setBatch] = useState<string>('');
   const [semester, setSemester] = useState<Semester>('' as Semester);
   const [session, setSession] = useState<string>(String(new Date().getFullYear()));
   const [updateSemester, setUpdateSemester] = useState(true);
@@ -37,7 +39,8 @@ export default function BulkFeeDemand() {
   const semesterOptions = program ? getSubCourseDef(program as ProgramCode).sub.terms : [];
 
   const template = course && program && semester ? MOCK_FEE_TEMPLATES.find(t => t.course === course && t.program === program && t.semester === semester) : null;
-  const total = template ? computeFeeTemplateTotal(template) : 0;
+  const templateSplit = template ? splitFee(template) : { full: 0, recurring: 0, oneTime: 0 };
+  const programBatches = useBatchStore((s) => s.batches).filter((b) => program !== '' && b.program === program && b.isActive);
 
   const allWithBalance = getStudentsWithBalance(students);
   const filtered = useMemo(() => {
@@ -49,11 +52,12 @@ export default function BulkFeeDemand() {
   const preview = useMemo(() => {
     return filtered.map(s => {
       const hasDemand = ledgerAll.some(t => t.studentSno === s.sno && t.type === 'Demand' && t.semester === semester && String(t.session) === String(session));
-      const hasTemplate = !!template;
-      const status = !hasTemplate ? 'no-template' : hasDemand ? 'duplicate' : 'ready';
-      return { student: s, status };
+      const fee = getPromotionFee(s) || templateSplit.recurring || templateSplit.full;
+      const hasFee = fee > 0;
+      const status = !hasFee ? 'no-template' : hasDemand ? 'duplicate' : 'ready';
+      return { student: s, status, fee };
     });
-  }, [filtered, ledgerAll, semester, session, template]);
+  }, [filtered, ledgerAll, semester, session, templateSplit.recurring, templateSplit.full]);
 
   const readyCount = preview.filter(p => p.status === 'ready').length;
   const duplicateCount = preview.filter(p => p.status === 'duplicate').length;
@@ -63,14 +67,14 @@ export default function BulkFeeDemand() {
     setCourse(v);
     const def = getCourseDef(v);
     setProgram(def.subCourses.length === 1 ? def.subCourses[0].value : '' as any);
+    setBatch('');
     setSemester('' as Semester);
   };
 
   const handleGenerate = async () => {
     setError('');
     if (!course || !program || !batch || !semester || !session) { setError('Course, program, batch, term and session are required.'); return; }
-    if (!template) { setError('No fee template found for selected term — cannot generate.'); return; }
-    if (readyCount === 0) { setError('No eligible students (all duplicates or no template).'); return; }
+    if (readyCount === 0) { setError('No eligible students (all duplicates or no fee).'); return; }
     setLoading(true);
     let created = 0, skipped = 0;
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
@@ -90,7 +94,7 @@ export default function BulkFeeDemand() {
         type: 'Demand',
         semester,
         session: parseInt(session, 10) || undefined,
-        fees: total,
+        fees: p.fee,
         discount: 0,
         payment: 0,
         receiptNo: null,
@@ -149,7 +153,7 @@ export default function BulkFeeDemand() {
             </div>
             <div>
               <Label>Sub-course *</Label>
-              <Select value={program} onValueChange={v => { setProgram(v as ProgramCode); setSemester('' as Semester); }} disabled={!course}>
+              <Select value={program} onValueChange={v => { setProgram(v as ProgramCode); setBatch(''); setSemester('' as Semester); }} disabled={!course}>
                 <SelectTrigger><SelectValue placeholder="Select sub-course" /></SelectTrigger>
                 <SelectContent>{programOptions.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}</SelectContent>
               </Select>
@@ -157,10 +161,14 @@ export default function BulkFeeDemand() {
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <Label>Batch *</Label>
-              <Select value={batch} onValueChange={v => setBatch(v as BatchName)}>
-                <SelectTrigger><SelectValue placeholder="Select batch" /></SelectTrigger>
-                <SelectContent>{BATCH_OPTIONS.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}</SelectContent>
+              <Label>Batch * (per program)</Label>
+              <Select value={batch} onValueChange={setBatch} disabled={!program}>
+                <SelectTrigger><SelectValue placeholder={program ? 'Select batch' : 'Select program first'} /></SelectTrigger>
+                <SelectContent>
+                  {programBatches.map((b) => (
+                    <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
             <div>
@@ -182,12 +190,14 @@ export default function BulkFeeDemand() {
             <input type="checkbox" checked={updateSemester} onChange={e => setUpdateSemester(e.target.checked)} className="w-4 h-4 accent-blue-600" />
             <span className="text-sm text-slate-700">Update student current {courseDef ? getTermLabel(courseDef.system, semester) || 'term' : 'term'} to target after demand</span>
           </div>
-          {template ? (
+          {program && semester ? (
             <div className="text-sm bg-blue-50 border border-blue-100 rounded-xl p-3">
-              Template: <strong>{getSubCourseDef(program as ProgramCode).sub.label} · {courseDef ? getTermLabel(courseDef.system, semester) : semester}</strong> — Total {formatPKR(total)} (Adm {formatPKR(template.admissionFee)} + Tuit {formatPKR(template.tuitionFee)} + ID {formatPKR(template.idCardFee)} + Ann {formatPKR(template.annualCharges)} + Clin {formatPKR(template.clinicalCharges)} + Enroll {formatPKR(template.enrollmentFee)} + Dipl {formatPKR(template.diplomaFee)})
+              Promotion default: locked recurring fee per student
+              {template && (
+                <span> · Template {getSubCourseDef(program as ProgramCode).sub.label} {courseDef ? getTermLabel(courseDef.system, semester) : semester}: recurring {formatPKR(templateSplit.recurring)} (full {formatPKR(templateSplit.full)})</span>
+              )}
+              {!template && <span className="text-amber-700"> · No template — uses each student's locked fee; students without a locked fee will show as no-fee.</span>}
             </div>
-          ) : program && semester ? (
-            <div className="text-sm bg-amber-50 border border-amber-100 rounded-xl p-3 flex items-center gap-2 text-amber-700"><AlertTriangle size={14} /> No template for this term — cannot generate</div>
           ) : null}
         </CardContent>
       </Card>
@@ -213,6 +223,7 @@ export default function BulkFeeDemand() {
                       <TableHead>SNO</TableHead>
                       <TableHead>Name</TableHead>
                       <TableHead>Current Term</TableHead>
+                      <TableHead className="text-right">Fee</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -222,10 +233,11 @@ export default function BulkFeeDemand() {
                         <TableCell>{p.student.sno}</TableCell>
                         <TableCell>{p.student.name}<div className="text-xs text-slate-500">{p.student.fatherName}</div></TableCell>
                         <TableCell>{getTermLabel(getSubCourseDef(p.student.program).sub.terms.includes(p.student.semester) ? getSubCourseDef(p.student.program).course.system : 'semester', p.student.semester)}</TableCell>
+                        <TableCell className="text-right">{p.fee > 0 ? formatPKR(p.fee) : '—'}</TableCell>
                         <TableCell>
                           {p.status === 'ready' && <Badge className="bg-emerald-50 text-emerald-600 border border-emerald-100">Ready</Badge>}
                           {p.status === 'duplicate' && <Badge className="bg-amber-50 text-amber-600 border border-amber-100">Already demanded</Badge>}
-                          {p.status === 'no-template' && <Badge className="bg-red-50 text-red-600 border border-red-100">No template</Badge>}
+                          {p.status === 'no-template' && <Badge className="bg-red-50 text-red-600 border border-red-100">No fee</Badge>}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -242,7 +254,7 @@ export default function BulkFeeDemand() {
 
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
-        <Button onClick={handleGenerate} disabled={loading || readyCount === 0 || !template}>
+        <Button onClick={handleGenerate} disabled={loading || readyCount === 0}>
           {loading ? 'Generating...' : `Generate ${readyCount} Demands`}
         </Button>
       </div>

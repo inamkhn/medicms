@@ -24,9 +24,10 @@ import { normalizeCNIC, normalizeContact } from '@/lib/utils';
 
 import { getStudentsWithBalance } from '@/lib/mockData';
 import {
-  COURSES, BATCH_OPTIONS, SESSION_OPTIONS, SEMESTER_OPTIONS,
+  COURSES, SESSION_OPTIONS, SEMESTER_OPTIONS,
   getCourseDef, getSubCourseDef,
 } from '@/lib/constants';
+import { useBatchStore } from '@/stores/batchStore';
 import { cn, formatBalanceDisplay, formatDate, getTermLabel, pluralize } from '@/lib/utils';
 import type { StudentBadgeType, CourseCode, ProgramCode, Semester } from '@/types';
 
@@ -197,11 +198,18 @@ export default function StudentList() {
   const filterProgramOptions = courseFilter === 'all'
     ? COURSES.flatMap((c) => c.subCourses)
     : getCourseDef(courseFilter as CourseCode).subCourses;
+  const allBatches = useBatchStore((s) => s.batches);
+  const filterBatchOptions =
+    programFilter !== 'all'
+      ? allBatches.filter((b) => b.program === programFilter)
+      : courseFilter !== 'all'
+        ? allBatches.filter((b) => b.course === courseFilter)
+        : allBatches;
 
   // Filter handlers also reset the page (fixes the empty-page bug)
   const updateSearch = (v: string) => { setSearch(v); setPage(1); };
-  const updateCourse = (v: string) => { setCourseFilter(v); setProgramFilter('all'); setPage(1); };
-  const updateProgram = (v: string) => { setProgramFilter(v); setPage(1); };
+  const updateCourse = (v: string) => { setCourseFilter(v); setProgramFilter('all'); setBatchFilter('all'); setPage(1); };
+  const updateProgram = (v: string) => { setProgramFilter(v); setBatchFilter('all'); setPage(1); };
   const updateBatch = (v: string) => { setBatchFilter(v); setPage(1); };
   const updateSession = (v: string) => { setSessionFilter(v); setPage(1); };
   const updateSemester = (v: string) => { setSemesterFilter(v); setPage(1); };
@@ -550,13 +558,13 @@ export default function StudentList() {
             </Select>
 
             <Select value={batchFilter} onValueChange={updateBatch}>
-              <SelectTrigger className="w-[110px] h-7 text-[12px]">
+              <SelectTrigger className="w-[140px] h-7 text-[12px]">
                 <SelectValue placeholder="Batch" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Batches</SelectItem>
-                {BATCH_OPTIONS.map((b) => (
-                  <SelectItem key={b} value={b}>{b}</SelectItem>
+                {filterBatchOptions.map((b) => (
+                  <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

@@ -2,7 +2,7 @@
 // MediCMS Desktop v4.0 - App Router
 // ============================================
 
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
@@ -26,9 +26,10 @@ import TagBankWithdrawals from '@/pages/expenses/TagBankWithdrawals';
 import BankAccount from '@/pages/bank/BankAccount';
 import AddBankTransaction from '@/pages/bank/AddBankTransaction';
 import AuditTrail from '@/pages/audit/AuditTrail';
-import Approvals from '@/pages/Approvals';
 import DataImport from '@/pages/import/DataImport';
-import { useAuthStore, canWrite } from '@/stores/authStore';
+import Batches from '@/pages/batches/Batches';
+import PromoteStudent from '@/pages/ledger/PromoteStudent';
+import { useAuthStore } from '@/stores/authStore';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
@@ -37,15 +38,15 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
-  const user = useAuthStore((s) => s.user);
   if (!isLoggedIn) return <Navigate to="/login" replace />;
-  if (!canWrite(user?.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 export default function App() {
+  const isFileProtocol = typeof window !== 'undefined' && window.location.protocol === 'file:';
+  const Router = isFileProtocol ? HashRouter : BrowserRouter;
   return (
-    <BrowserRouter>
+    <Router>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
@@ -65,17 +66,18 @@ export default function App() {
           <Route path="ledger/:sno/add-demand" element={<AdminRoute><AddFeeDemand /></AdminRoute>} />
           <Route path="ledger/:sno/add-charge" element={<AdminRoute><AddCharge /></AdminRoute>} />
           <Route path="ledger/:sno/adjust" element={<AdminRoute><LedgerAdjustment /></AdminRoute>} />
+          <Route path="ledger/:sno/promote" element={<AdminRoute><PromoteStudent /></AdminRoute>} />
+          <Route path="batches" element={<AdminRoute><Batches /></AdminRoute>} />
           <Route path="fee-templates" element={<AdminRoute><FeeTemplates /></AdminRoute>} />
           <Route path="expenses" element={<AdminRoute><ExpensesList /></AdminRoute>} />
           <Route path="expenses/add" element={<AdminRoute><AddExpense /></AdminRoute>} />
           <Route path="expenses/tag-from-bank" element={<AdminRoute><TagBankWithdrawals /></AdminRoute>} />
           <Route path="bank" element={<AdminRoute><BankAccount /></AdminRoute>} />
           <Route path="bank/add" element={<AdminRoute><AddBankTransaction /></AdminRoute>} />
-          <Route path="approvals" element={<Approvals />} />
           <Route path="audit" element={<AuditTrail />} />
           <Route path="import" element={<AdminRoute><DataImport /></AdminRoute>} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </Router>
   );
 }

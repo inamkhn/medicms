@@ -3,8 +3,8 @@
 // Based on Desktop_Module_Architecture_v4
 // ============================================
 
-// --- User & Auth ---
-export type UserRole = 'Admin' | 'Principal';
+// --- User & Auth (admin-only) ---
+export type UserRole = 'Admin';
 
 export interface User {
   id: string;
@@ -36,11 +36,17 @@ export const PROGRAMS: ProgramCode[] = [
 ];
 
 // --- Batch & Session ---
-export type BatchName = 
-  | '1st Batch' | '2nd Batch' | '3rd Batch' | '4th Batch' | '5th Batch'
-  | '6th Batch' | '7th Batch' | '8th Batch' | '9th Batch' | '10th Batch'
-  | '11th Batch' | '12th Batch' | '13th Batch' | '14th Batch' | '15th Batch'
-  | '16th Batch' | '17th Batch';
+export type BatchName = string;
+
+export interface Batch {
+  id: string;
+  course: CourseCode;
+  program: ProgramCode;   // strict per-program: each batch belongs to exactly one program
+  name: string;           // e.g. "1st Batch", "Batch-A 2026"
+  session: number;        // e.g. 2026
+  isActive: boolean;
+  createdAt: string;
+}
 
 export type Semester = '1st' | '2nd' | '3rd' | '4th' | '5th' | '6th' | '7th' | '8th';
 
@@ -55,9 +61,17 @@ export interface Student {
   regDate: string;                // ISO date
   course: CourseCode;             // Parent course (e.g. Paramedics, PNC)
   program: ProgramCode;           // Sub-course (e.g. Health, LHV)
-  batch: BatchName;
+  batch: string;
   session: number;                // Year e.g. 2017
   semester: Semester;             // Current semester (derived from ledger)
+  // Locked fee at admission: full Sem-1 total + recurring promotion default
+  baseFeeTotal?: number;
+  baseFeeRecurring?: number;
+  baseFeeBreakup?: {
+    admissionFee: number; tuitionFee: number; idCardFee: number;
+    annualCharges: number; securityFee: number; enrollmentFee: number;
+    diplomaFee: number; clinicalCharges: number;
+  };
   photoUrl?: string | null;        // Base64 data URL or remote URL (for ID Card)
   dob?: string | null;               // ISO date (YYYY-MM-DD)
   gender?: 'Male' | 'Female' | 'Other' | null;
@@ -76,7 +90,7 @@ export interface FeeTemplate {
   course: CourseCode;             // Parent course
   program: ProgramCode;           // Sub-course
   semester: Semester;
-  batch: BatchName;
+  batch: string;
   session: number;
   admissionFee: number;
   tuitionFee: number;             // Stored as tuition_fee (corrected from Tution_Fee)

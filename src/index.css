@@ -76,10 +76,27 @@ body {
 /* --- Print: page content only (Sidebar, Header, StatusBar are print:hidden) --- */
 @media print {
   body {
-    background: white;
+    background: white !important;
+    color: #000 !important;
   }
   main {
     overflow: visible !important;
     padding: 0 !important;
+  }
+  .print-area {
+    display: block !important;
+    color: #000 !important;
+  }
+  .print-area * {
+    color: #000 !important;
+    border-color: #000 !important;
+  }
+  .thermal-receipt {
+    width: 80mm;
+    max-width: 80mm;
+    font-family: ui-monospace, monospace;
+  }
+  @page {
+    margin: 8mm;
   }
 }

@@ -5,7 +5,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Users, UserPlus, BookOpen, CreditCard,
-  FileText, Receipt, Building2, History, Settings, Database, LogOut
+  FileText, Receipt, Building2, History, Settings, Database, LogOut, Layers
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores';
@@ -15,7 +15,6 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
   shortcut?: string;
-  adminOnly?: boolean;
 }
 
 const MAIN_ITEMS: NavItem[] = [
@@ -26,32 +25,29 @@ const MAIN_ITEMS: NavItem[] = [
 
 const FINANCE_ITEMS: NavItem[] = [
   { to: '/ledger', label: 'Fee Ledger', icon: BookOpen },
-  { to: '/ledger/bulk-demand', label: 'Bulk Demand', icon: Receipt, adminOnly: true },
+  { to: '/ledger/bulk-demand', label: 'Bulk Demand', icon: Receipt },
   { to: '/payments/record', label: 'Payments', icon: CreditCard, shortcut: 'Ctrl+P' },
-  { to: '/fee-templates', label: 'Fee Templates', icon: Receipt, adminOnly: true },
+  { to: '/fee-templates', label: 'Fee Templates', icon: Receipt },
 ];
 
 const OPERATIONS_ITEMS: NavItem[] = [
-  { to: '/expenses', label: 'Expenses', icon: FileText, adminOnly: true },
-  { to: '/bank', label: 'Bank Account', icon: Building2, adminOnly: true },
+  { to: '/expenses', label: 'Expenses', icon: FileText },
+  { to: '/bank', label: 'Bank Account', icon: Building2 },
+  { to: '/batches', label: 'Batches', icon: Layers },
 ];
 
 const REPORTS_ITEMS: NavItem[] = [
   { to: '/reports', label: 'Reports', icon: FileText },
-  { to: '/approvals', label: 'Approvals', icon: History },
   { to: '/audit', label: 'Audit Trail', icon: History },
 ];
 
 const SYSTEM_ITEMS: NavItem[] = [
-  { to: '/import', label: 'Data Import', icon: Database, adminOnly: true },
+  { to: '/import', label: 'Data Import', icon: Database },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
 function NavSection({ title, items }: { title: string; items: NavItem[] }) {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'Admin';
-  const visibleItems = items.filter(item => !item.adminOnly || isAdmin);
-  if (visibleItems.length === 0) return null;
+  const visibleItems = items;
   return (
     <div className="mb-3">
       <div className="px-2 mb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-widest text-center">

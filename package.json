@@ -44,6 +44,9 @@
   "build": {
     "appId": "com.paramedical.medicms",
     "productName": "MediCMS Desktop",
+    "asar": true,
+    "compression": "maximum",
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
       "electron/**/*"

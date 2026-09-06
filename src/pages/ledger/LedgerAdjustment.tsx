@@ -12,8 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ADJUSTMENT_TYPES } from '@/lib/constants';
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
 import { getStudentsWithBalance } from '@/lib/mockData';
-import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore, useApprovalStore } from '@/stores';
-import { ADJUSTMENT_APPROVAL_THRESHOLD } from '@/stores/approvalStore';
+import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import type { LedgerTransaction } from '@/types';
 
 export default function LedgerAdjustment() {
@@ -41,25 +40,6 @@ export default function LedgerAdjustment() {
 
   const handleSubmit = async () => {
     if (adjAmount <= 0 || !adjType || !reason.trim()) return;
-    const user = useAuthStore.getState().user;
-    if (adjAmount > ADJUSTMENT_APPROVAL_THRESHOLD && user?.role !== 'Principal') {
-      useApprovalStore.getState().addRequest({
-        type: 'Adjustment',
-        studentSno: student.sno,
-        studentName: student.name,
-        amount: adjAmount,
-        reason: reason.trim(),
-        details: `${ADJUSTMENT_TYPES.find(a=>a.value===adjType)?.label ?? adjType} · ${formatPKR(adjAmount)} ${effect === 'reduce' ? 'reduce' : 'increase'}${reference ? ` · Ref ${reference}` : ''} — ${reason.trim()}`,
-        requestedBy: user?.name ?? 'Admin',
-        payload: { adjType, adjAmount, effect, reference, reason: reason.trim() },
-      });
-      alert(`Amount exceeds PKR ${ADJUSTMENT_APPROVAL_THRESHOLD.toLocaleString()} — sent for Principal approval.`);
-      return;
-    }
-    if (adjAmount > ADJUSTMENT_APPROVAL_THRESHOLD && user?.role === 'Principal') {
-      const ok = window.confirm(`Amount ${formatPKR(adjAmount)} exceeds threshold — Principal approval. Confirm posting?`);
-      if (!ok) return;
-    }
     setLoading(true);
     const nextTxn = getNextTxnNo(useLedgerStore.getState().transactions, student.sno);
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
@@ -196,10 +176,7 @@ export default function LedgerAdjustment() {
 
           {/* Approved by */}
           <div className="text-sm text-slate-500">
-            Approved by: <strong className="text-slate-700">Admin Khalid</strong>
-            {adjAmount > 5000 && (
-              <span className="text-amber-500 ml-2">(Principal required if &gt; 5,000)</span>
-            )}
+            Approved by: <strong className="text-slate-700">Admin</strong>
           </div>
         </CardContent>
       </Card>

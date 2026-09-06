@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { Users, UserX, IndianRupee, RefreshCw, Plus, CreditCard, Search, FileText, Wifi, Building2, Wallet, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useUIStore, useStudentStore, useLedgerStore, useBankStore, useExpenseStore, useApprovalStore, useSettingsStore } from '@/stores';
+import { useUIStore, useStudentStore, useLedgerStore, useBankStore, useExpenseStore, useSettingsStore } from '@/stores';
 import { formatPKR, formatDate } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
 import { getStudentsWithBalance } from '@/lib/mockData';
@@ -20,14 +20,12 @@ export default function Dashboard() {
   const ledger = useLedgerStore(s => s.transactions);
   const bankTxs = useBankStore(s => s.transactions);
   const expenses = useExpenseStore(s => s.expenses);
-  const approvals = useApprovalStore(s => s.requests);
   const showTestRecords = useSettingsStore(s => s.showTestRecords);
 
   const withBalance = getStudentsWithBalance(students).filter(s => showTestRecords || !s.isTestRecord);
   const activeStudents = withBalance.filter(s => !s.struckOff).length;
   const struckOffStudents = withBalance.filter(s => s.struckOff).length;
   const totalDues = withBalance.filter(s => s.computedBalance > 0 && !s.struckOff).reduce((sum, s) => sum + s.computedBalance, 0);
-  const pendingApprovals = approvals.filter(a => a.status === 'pending').length;
   const bankBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
   const todayStr = new Date().toISOString().split('T')[0];
   const todayPayments = ledger.filter(t => t.type === 'Pay' && t.date === todayStr && t.payment > 0).map(t => {
@@ -95,15 +93,15 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className="hover:shadow-sm cursor-pointer" onClick={() => navigate('/approvals')}>
+        <Card className="hover:shadow-sm cursor-pointer" onClick={() => navigate('/batches')}>
           <CardContent className="p-3">
             <div className="flex items-center gap-2.5">
               <div className="w-7 h-7 bg-violet-600 rounded-md flex items-center justify-center shrink-0">
                 <RefreshCw className="text-white" size={14} />
               </div>
               <div className="min-w-0">
-                <div className="text-[16px] font-bold text-slate-900 leading-none">{pendingCount + pendingApprovals}</div>
-                <div className="text-[11px] text-slate-500">Pending · {pendingApprovals} appr.</div>
+                <div className="text-[16px] font-bold text-slate-900 leading-none">{pendingCount}</div>
+                <div className="text-[11px] text-slate-500">Pending sync</div>
               </div>
             </div>
           </CardContent>
@@ -134,13 +132,13 @@ export default function Dashboard() {
             </div>
           </CardContent>
         </Card>
-        <Card className="cursor-pointer hover:shadow-sm" onClick={() => navigate('/approvals')}>
+        <Card className="cursor-pointer hover:shadow-sm" onClick={() => navigate('/batches')}>
           <CardContent className="p-3">
             <div className="flex items-center gap-2.5">
               <div className="w-6 h-6 bg-amber-500 rounded-md flex items-center justify-center"><Clock className="text-white" size={12} /></div>
               <div className="min-w-0">
-                <div className="text-[16px] font-bold text-slate-900 leading-none">{pendingApprovals}</div>
-                <div className="text-[11px] text-slate-500">Approvals</div>
+                <div className="text-[16px] font-bold text-slate-900 leading-none">{activeStudents + struckOffStudents}</div>
+                <div className="text-[11px] text-slate-500">Total students</div>
               </div>
             </div>
           </CardContent>
@@ -174,9 +172,9 @@ export default function Dashboard() {
               <FileText size={12} className="mr-1.5" />
               Bulk
             </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/approvals')}>
+            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/batches')}>
               <Clock size={12} className="mr-1.5" />
-              Approvals {pendingApprovals>0 && `(${pendingApprovals})`}
+              Batches
             </Button>
             <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => { setSyncing(); setTimeout(() => syncComplete(0, 0), 1000); }}>
               <Wifi size={12} className="mr-1.5" />

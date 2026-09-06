@@ -48,19 +48,9 @@ export const useAuthStore = create<AuthState>()(
   )
 );
 
-// --- Role-based access control ---
-export function hasPermission(role: UserRole | undefined, module: string): boolean {
-  if (!role) return false;
-  
-  const permissions: Record<UserRole, string[]> = {
-    Admin: ['*'],  // Full access
-    Principal: ['dashboard', 'students', 'ledger', 'reports', 'audit'],  // Read-only
-  };
-  
-  if (role === 'Admin') return true;
-  
-  const allowed = permissions[role] || [];
-  return allowed.includes(module);
+// --- Role-based access control (admin-only) ---
+export function hasPermission(role: UserRole | undefined, _module: string): boolean {
+  return !!role;
 }
 
 export function canWrite(role: UserRole | undefined): boolean {

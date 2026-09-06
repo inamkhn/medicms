@@ -6,11 +6,12 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ArrowLeft, AlertTriangle, CheckCircle2, Upload, X, Image as ImageIcon } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Upload, X, Image as ImageIcon, Printer } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
 import { 
   Select, 
   SelectContent, 
@@ -18,13 +19,16 @@ import {
   SelectTrigger, 
   SelectValue 
 } from '@/components/ui/select';
-import { COURSES, BATCH_OPTIONS, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
-import { formatPKR, computeFeeTemplateTotal, getTermLabel, normalizeCNIC, normalizeContact, isValidCNIC, isValidContact, batchToSession } from '@/lib/utils';
+import { COURSES, SESSION_OPTIONS, BANK_INFO, getCourseDef, getSubCourseDef } from '@/lib/constants';
+import { formatPKR, getTermLabel, normalizeCNIC, normalizeContact, isValidCNIC, isValidContact } from '@/lib/utils';
+import { splitFee } from '@/lib/promotion';
 import { admissionSchema, type AdmissionFormData } from '@/lib/schemas';
 import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
 import { useStudentStore, getNextSno } from '@/stores/studentStore';
-import { useAuditStore, useAuthStore } from '@/stores';
-import type { ProgramCode, BatchName, CourseCode, Semester, Student } from '@/types';
+import { useAuditStore, useAuthStore, useLedgerStore, getNextTxnNo, useReceiptBookStore, useBankStore, getNextBankSno, useSettingsStore } from '@/stores';
+import { useBatchStore } from '@/stores/batchStore';
+import type { LedgerTransaction } from '@/types';
+import type { ProgramCode, CourseCode, Semester, Student } from '@/types';
 
 type Step = 1 | 2 | 3;
 
@@ -58,7 +62,10 @@ export default function NewAdmission() {
     },
     mode: 'onChange',
   });
-  const formData = form.watch() as AdmissionFormData & { course: CourseCode | ''; program: ProgramCode | ''; batch: BatchName | ''; session: number | '' };
+  const formData = form.watch() as AdmissionFormData & { course: CourseCode | ''; program: ProgramCode | ''; batch: string | ''; session: number | '' };
+  const programBatches = useBatchStore((s) => s.batches).filter(
+    (b) => formData.program !== '' && b.program === formData.program && b.isActive
+  );
   const isDirty = form.formState.isDirty;
 
   // Dirty guard — beforeunload + navigation confirm
@@ -82,13 +89,62 @@ export default function NewAdmission() {
   const subCourseDef = formData.program ? getSubCourseDef(formData.program).sub : null;
 
   // Find matching fee template (course + sub-course + term)
-  const feeTemplate = MOCK_FEE_TEMPLATES.find(t => 
-    t.program === formData.program && 
+  const feeTemplate = MOCK_FEE_TEMPLATES.find(t =>
+    t.program === formData.program &&
     t.course === formData.course &&
     t.semester === formData.semester
   );
 
-  const totalFee = feeTemplate ? computeFeeTemplateTotal(feeTemplate) : 0;
+  // Custom editable fee — init from template, admin can lower/raise per student
+  const [customFee, setCustomFee] = useState({
+    admissionFee: 0, tuitionFee: 0, idCardFee: 0, annualCharges: 0,
+    securityFee: 0, enrollmentFee: 0, diplomaFee: 0, clinicalCharges: 0,
+  });
+  const [feeTouched, setFeeTouched] = useState(false);
+  const templateKey = feeTemplate ? feeTemplate.id : `none-${formData.course}-${formData.program}-${formData.semester}`;
+  useEffect(() => {
+    if (feeTemplate) {
+      setCustomFee({
+        admissionFee: feeTemplate.admissionFee, tuitionFee: feeTemplate.tuitionFee,
+        idCardFee: feeTemplate.idCardFee, annualCharges: feeTemplate.annualCharges,
+        securityFee: feeTemplate.securityFee, enrollmentFee: feeTemplate.enrollmentFee,
+        diplomaFee: feeTemplate.diplomaFee, clinicalCharges: feeTemplate.clinicalCharges,
+      });
+    } else {
+      setCustomFee({
+        admissionFee: 0, tuitionFee: 0, idCardFee: 0, annualCharges: 0,
+        securityFee: 0, enrollmentFee: 0, diplomaFee: 0, clinicalCharges: 0,
+      });
+    }
+    setFeeTouched(false);
+  }, [templateKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const feeSplit = splitFee(customFee);
+  const totalFee = feeSplit.full;
+  const recurringFee = feeSplit.recurring;
+
+  // Optional payment collected at admission (payment receipt only if amount > 0)
+  const [payAmount, setPayAmount] = useState('');
+  const [payMode, setPayMode] = useState<'Cash' | 'Bank' | 'Online' | 'Cheque'>('Cash');
+  const [payRef, setPayRef] = useState('');
+  const [payReceipt, setPayReceipt] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [successPay, setSuccessPay] = useState<LedgerTransaction | null>(null);
+  const [successDemandTotal, setSuccessDemandTotal] = useState(0);
+  const defaultPaper = useSettingsStore((s) => s.paperSize);
+  const [receiptSize, setReceiptSize] = useState<ReceiptSize>(defaultPaper);
+  const receiptBooks = useReceiptBookStore((s) => s.books);
+  const getNextReceipt = useReceiptBookStore((s) => s.getNextReceipt);
+  const userNameForReceipt = useAuthStore((s) => s.user?.name) ?? 'Admin';
+  const payNum = parseFloat(payAmount) || 0;
+
+  useEffect(() => {
+    if (step === 3 && payNum <= 0 && !payReceipt) {
+      const next = getNextReceipt(userNameForReceipt);
+      if (next) setPayReceipt(next);
+    }
+  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Next SNO that will be assigned by the store (centralized helper)
   const nextSno = getNextSno(students);
@@ -141,6 +197,12 @@ export default function NewAdmission() {
   const handleProgramChange = (program: ProgramCode) => {
     form.setValue('program', program, { shouldValidate: true });
     form.setValue('semester', '1st', { shouldValidate: true });
+    form.setValue('batch', '', { shouldValidate: true });
+    const batches = useBatchStore.getState().batches.filter((b) => b.program === program && b.isActive);
+    if (batches.length === 1) {
+      form.setValue('batch', batches[0].name, { shouldValidate: true });
+      form.setValue('session', batches[0].session as any, { shouldValidate: true });
+    }
   };
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -157,6 +219,25 @@ export default function NewAdmission() {
   };
 
   const handleSubmit = form.handleSubmit((data) => {
+    if (saving) return;
+    setSubmitError('');
+    // Edge: payment guards before creating anything
+    if (payNum < 0) { setSubmitError('Payment amount cannot be negative.'); return; }
+    if (payNum > totalFee) { setSubmitError(`Payment ${formatPKR(payNum)} exceeds Sem-1 demand ${formatPKR(totalFee)} — reduce amount.`); return; }
+    if (payNum > 0) {
+      if (!payReceipt.trim()) { setSubmitError('Receipt number is required when collecting payment.'); return; }
+      const allLedger = useLedgerStore.getState().transactions;
+      const dup = allLedger.some((t) => t.receiptNo && t.receiptNo.toLowerCase() === payReceipt.trim().toLowerCase());
+      if (dup) { setSubmitError(`Receipt No. ${payReceipt.trim()} already exists.`); return; }
+      const num = parseInt(payReceipt.replace('#', ''), 10);
+      const book = receiptBooks.find((b) => b.isActive && num >= b.start && num <= b.end);
+      if (!book) { setSubmitError(`Receipt ${payReceipt} not in any active book range.`); return; }
+      if (payMode === 'Cheque' && !payRef.trim()) { setSubmitError('Cheque number is required.'); return; }
+    }
+    // Edge: future reg date
+    if (data.regDate && new Date(data.regDate) > new Date()) { setSubmitError('Registration date cannot be in the future.'); return; }
+    setSaving(true);
+    const sessionNum = typeof data.session === 'number' ? data.session : parseInt(String(data.session),10) || 2026;
     const created = addStudent({
       name: data.name.trim(),
       fatherName: data.fatherName.trim(),
@@ -172,25 +253,101 @@ export default function NewAdmission() {
       course: data.course as CourseCode,
       program: data.program as ProgramCode,
       semester: data.semester as Semester,
-      batch: data.batch as BatchName,
-      session: typeof data.session === 'number' ? data.session : parseInt(String(data.session),10) || 2026,
+      batch: String(data.batch),
+      session: sessionNum,
+      // Locked custom fee: same recurring total reused on every promotion
+      baseFeeTotal: totalFee || undefined,
+      baseFeeRecurring: recurringFee || totalFee || undefined,
+      baseFeeBreakup: { ...customFee },
     });
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    // Auto-create Sem-1 demand with the custom fee so ledger starts with dues
+    if (totalFee > 0) {
+      const allTx = useLedgerStore.getState().transactions;
+      const tx: LedgerTransaction = {
+        id: `tx-${created.sno}-1-${Date.now()}`,
+        studentSno: created.sno,
+        txnNo: getNextTxnNo(allTx, created.sno),
+        date: data.regDate || new Date().toISOString().split('T')[0],
+        type: 'Demand',
+        semester: data.semester as Semester,
+        session: sessionNum,
+        fees: totalFee,
+        discount: 0,
+        payment: 0,
+        receiptNo: null,
+        receivedBy: null,
+        narration: feeTouched
+          ? `Admission fee (custom) — ${getSubCourseDef(created.program).sub.label} ${data.semester}`
+          : `Admission fee — ${getSubCourseDef(created.program).sub.label} ${data.semester}`,
+        createdAt: new Date().toISOString(),
+        createdBy: userName,
+        synced: false,
+      };
+      useLedgerStore.getState().addTransaction(tx);
+      useAuditStore.getState().addLog({
+        user: userName,
+        action: 'Fee Demand',
+        studentSno: created.sno,
+        details: `Admission demand ${formatPKR(totalFee)} (recurring ${formatPKR(recurringFee)}) · ${created.batch}`,
+      });
+    }
+    // Optional on-the-spot payment → Pay txn + receipt-book consume + bank deposit
+    let payTx: LedgerTransaction | null = null;
+    if (payNum > 0) {
+      const allTx2 = useLedgerStore.getState().transactions;
+      payTx = {
+        id: `tx-${created.sno}-pay-${Date.now()}`,
+        studentSno: created.sno,
+        txnNo: getNextTxnNo(allTx2, created.sno),
+        date: data.regDate || new Date().toISOString().split('T')[0],
+        type: 'Pay',
+        fees: 0,
+        discount: 0,
+        payment: payNum,
+        receiptNo: payReceipt.trim(),
+        receivedBy: userName,
+        narration: payMode === 'Cash' ? 'Admission-time collection' : `${payMode}${payRef ? ` Ref ${payRef.trim()}` : ''} — admission-time collection`,
+        createdAt: new Date().toISOString(),
+        createdBy: userName,
+        synced: false,
+      };
+      useLedgerStore.getState().addTransaction(payTx);
+      useReceiptBookStore.getState().useReceipt(payReceipt.trim(), userName);
+      if (payMode !== 'Cash') {
+        const bankTxs = useBankStore.getState().transactions;
+        const lastBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
+        useBankStore.getState().addTransaction({
+          sno: getNextBankSno(bankTxs),
+          date: data.regDate || new Date().toISOString().split('T')[0],
+          deposit: payNum,
+          withdrawal: 0,
+          balance: lastBalance + payNum,
+          narration: `Admission fee from ${created.name} (SNO:${created.sno}) · Rcpt ${payReceipt.trim()} · ${payMode}`,
+          linkedExpenseId: null,
+          isPersonal: false,
+          synced: false,
+        });
+      }
+      useAuditStore.getState().addLog({
+        user: userName,
+        action: 'Payment',
+        studentSno: created.sno,
+        details: `Admission-time ${formatPKR(payNum)} · ${payMode} · Rcpt ${payReceipt.trim()}`,
+      });
+    }
     useAuditStore.getState().addLog({
       user: userName,
       action: 'New Admission',
       studentSno: created.sno,
-      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch}`,
+      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch} · Fee ${formatPKR(totalFee)}${payTx ? ` · Paid ${formatPKR(payNum)}` : ''}`,
     });
+    setSuccessPay(payTx);
+    setSuccessDemandTotal(totalFee);
+    setReceiptSize(useSettingsStore.getState().paperSize);
     setSuccess(created);
+    setSaving(false);
   });
-
-  // Auto-redirect from the success screen
-  useEffect(() => {
-    if (!success) return;
-    const t = setTimeout(() => navigate('/students'), 2200);
-    return () => clearTimeout(t);
-  }, [success, navigate]);
 
   // Enter key advances / submits the current step
   const handleFormSubmit = (e: React.FormEvent) => {
@@ -199,33 +356,77 @@ export default function NewAdmission() {
     else handleSubmit();
   };
 
-  // --- Success screen ---
+  // --- Success screen (stays until admin chooses; receipt prints clean) ---
   if (success) {
+    const institute = {
+      name: useSettingsStore.getState().instituteName,
+      address: useSettingsStore.getState().instituteAddress,
+      phone: useSettingsStore.getState().institutePhone,
+    };
+    const subLabel = (() => { try { return getSubCourseDef(success.program).sub.label; } catch { return success.program; } })();
     return (
-      <Card className="max-w-xl mx-auto">
-        <CardContent className="py-10 text-center">
-          <CheckCircle2 size={48} className="mx-auto text-emerald-500" />
-          <h2 className="text-xl font-bold text-slate-900 mt-4">Admission Saved</h2>
-          <p className="text-sm text-slate-500 mt-2">
-            {success.name} · {getSubCourseDef(success.program).sub.label} · {success.batch}
-          </p>
-          <div className="mt-4">
-            <span className="text-xs text-slate-400 uppercase tracking-wide">Assigned SNO</span>
-            <div className="inline-block mt-1 px-6 py-2 bg-blue-50 border border-blue-100 rounded-xl text-2xl font-bold text-blue-600">
-              {success.sno}
+      <div className="space-y-4">
+        <Card className="max-w-xl mx-auto print:hidden">
+          <CardContent className="py-8 text-center">
+            <CheckCircle2 size={44} className="mx-auto text-emerald-500" />
+            <h2 className="text-xl font-bold text-slate-900 mt-3">Admission Saved</h2>
+            <p className="text-sm text-slate-500 mt-1">
+              {success.name} · {subLabel} · {success.batch} · SNO <strong>{success.sno}</strong>
+            </p>
+            <p className="text-sm text-slate-600 mt-2">
+              Demand {formatPKR(successDemandTotal)}
+              {successPay ? <span> · Paid {formatPKR(successPay.payment)} · Balance {formatPKR(successDemandTotal - successPay.payment)}</span> : <span> · No payment collected (dues slip only)</span>}
+            </p>
+            {successPay && (
+              <div className="flex justify-center gap-2 mt-4">
+                <Button variant={receiptSize === '80mm' ? 'default' : 'outline'} size="sm" onClick={() => setReceiptSize('80mm')}>80mm</Button>
+                <Button variant={receiptSize === 'A4' ? 'default' : 'outline'} size="sm" onClick={() => setReceiptSize('A4')}>A4</Button>
+                <Button size="sm" onClick={() => window.print()}>
+                  <Printer size={14} className="mr-1" /> Print Receipt
+                </Button>
+              </div>
+            )}
+            <div className="flex flex-wrap justify-center gap-2 mt-5">
+              <Button variant="outline" onClick={() => { setSuccess(null); setSuccessPay(null); setStep(1); form.reset(); setPayAmount(''); setPayRef(''); setPayReceipt(''); }}>
+                New Admission
+              </Button>
+              <Button variant="outline" onClick={() => navigate(`/ledger/${success.sno}`)}>
+                View Ledger
+              </Button>
+              {!successPay && (
+                <Button variant="outline" onClick={() => navigate(`/payments/record?sno=${success.sno}`)}>
+                  Collect Payment
+                </Button>
+              )}
+              <Button onClick={() => navigate('/students')}>
+                Go to Students
+              </Button>
             </div>
+          </CardContent>
+        </Card>
+        {successPay && (
+          <div className="print-area">
+            <ReceiptDoc
+              size={receiptSize}
+              institute={institute}
+              studentName={success.name}
+              studentSno={success.sno}
+              programLabel={subLabel}
+              batchLabel={success.batch}
+              sessionLabel={String(success.session)}
+              receiptNo={successPay.receiptNo ?? ''}
+              date={successPay.date}
+              payment={successPay.payment}
+              mode={payMode}
+              bankRef={payRef}
+              demandTotal={successDemandTotal}
+              prevBalance={successDemandTotal}
+              newBalance={successDemandTotal - successPay.payment}
+              receivedBy={successPay.receivedBy ?? 'Admin'}
+            />
           </div>
-          <p className="text-xs text-slate-400 mt-3">Redirecting to Students…</p>
-          <div className="flex justify-center gap-3 mt-6">
-            <Button variant="outline" onClick={() => { setSuccess(null); setStep(1); form.reset(); }}>
-              New Admission
-            </Button>
-            <Button onClick={() => navigate('/students')}>
-              Go to Students
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+        )}
+      </div>
     );
   }
 
@@ -446,25 +647,30 @@ export default function NewAdmission() {
             </div>
 
             <div>
-              <Label>Batch *</Label>
+              <Label>Batch * (per program)</Label>
               <Select
                 value={formData.batch}
+                disabled={!formData.program}
                 onValueChange={(v) => {
-                  form.setValue('batch', v as BatchName, { shouldValidate: true });
-                  const autoSession = batchToSession(v);
-                  form.setValue('session', autoSession, { shouldValidate: true });
+                  form.setValue('batch', v, { shouldValidate: true });
+                  const b = programBatches.find((x) => x.name === v);
+                  if (b) form.setValue('session', b.session as any, { shouldValidate: true });
                 }}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Select batch" />
+                  <SelectValue placeholder={formData.program ? 'Select batch' : 'Select program first'} />
                 </SelectTrigger>
                 <SelectContent>
-                  {BATCH_OPTIONS.map(b => (
-                    <SelectItem key={b} value={b}>{b}</SelectItem>
+                  {programBatches.map((b) => (
+                    <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-slate-400 mt-1">Auto-sets session to {formData.batch ? batchToSession(formData.batch) : '—'} (editable)</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {programBatches.length === 0
+                  ? 'No batches for this program yet — add one in Batches page.'
+                  : 'Auto-sets session from batch (editable)'}
+              </p>
             </div>
 
             <div>
@@ -562,61 +768,114 @@ export default function NewAdmission() {
             </CardContent>
           </Card>
 
-          {/* Initial Fee Demand */}
-          {feeTemplate && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Initial Fee Demand (auto-loaded from template)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span>Admission Fee</span>
-                    <span>{formatPKR(feeTemplate.admissionFee)}</span>
+          {/* Initial Fee — editable per student */}
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                Admission Fee {feeTemplate ? '(from template — editable)' : '(no template — enter manually)'}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2 text-sm">
+                {([
+                  ['admissionFee', 'Admission Fee', 'one-time'],
+                  ['tuitionFee', 'Tuition Fee', 'recurring'],
+                  ['idCardFee', 'ID Card Fee', 'one-time'],
+                  ['enrollmentFee', 'Enrollment Fee', 'one-time'],
+                  ['annualCharges', 'Annual Charges', 'recurring'],
+                  ['clinicalCharges', 'Clinical Charges', 'recurring'],
+                  ['diplomaFee', 'Diploma Fee', 'recurring'],
+                  ['securityFee', 'Security Fee', 'one-time'],
+                ] as const).map(([key, label, kind]) => (
+                  <div key={key} className="flex items-center justify-between gap-3">
+                    <span>{label} <span className="text-xs text-slate-400">({kind})</span></span>
+                    <Input
+                      type="number"
+                      className="w-[140px] text-right"
+                      value={customFee[key]}
+                      min={0}
+                      onChange={(e) => {
+                        setCustomFee({ ...customFee, [key]: parseInt(e.target.value) || 0 });
+                        setFeeTouched(true);
+                      }}
+                    />
                   </div>
-                  <div className="flex justify-between">
-                    <span>Tuition Fee</span>
-                    <span>{formatPKR(feeTemplate.tuitionFee)}</span>
+                ))}
+                <div className="flex justify-between font-bold pt-3 border-t border-slate-100">
+                  <span>SEM-1 DEMAND (full)</span>
+                  <span>{formatPKR(totalFee)}</span>
+                </div>
+                <div className="flex justify-between text-sm text-blue-600 pt-1">
+                  <span>Locked promotion fee (recurring each semester)</span>
+                  <span>{formatPKR(recurringFee)}</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Lower any head for concession students — promotions will reuse {formatPKR(recurringFee)} by default.
+                  A Sem-1 demand of {formatPKR(totalFee)} is auto-created on save.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Optional payment at admission — receipt only if amount > 0 */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Collect Payment Now? (optional)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Amount collected (PKR)</Label>
+                  <Input
+                    type="number"
+                    value={payAmount}
+                    min={0}
+                    max={totalFee || undefined}
+                    onChange={(e) => setPayAmount(e.target.value)}
+                    placeholder="0 = no receipt"
+                  />
+                </div>
+                <div>
+                  <Label>Receipt No. {payNum > 0 ? '*' : ''}</Label>
+                  <Input
+                    value={payReceipt}
+                    onChange={(e) => setPayReceipt(e.target.value)}
+                    placeholder="Auto from receipt book"
+                  />
+                </div>
+              </div>
+              {payNum > 0 && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>Mode</Label>
+                    <Select value={payMode} onValueChange={(v) => setPayMode(v as typeof payMode)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Cash">Cash</SelectItem>
+                        <SelectItem value="Bank">Bank Transfer — {BANK_INFO.name}</SelectItem>
+                        <SelectItem value="Online">Online / Easypaisa / JazzCash</SelectItem>
+                        <SelectItem value="Cheque">Cheque</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <div className="flex justify-between">
-                    <span>ID Card Fee</span>
-                    <span>{formatPKR(feeTemplate.idCardFee)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Enrollment Fee</span>
-                    <span>{formatPKR(feeTemplate.enrollmentFee)}</span>
-                  </div>
-                  {courseDef?.system === 'semester' && (
-                    <>
-                      <div className="flex justify-between text-slate-400">
-                        <span>Annual Charges</span>
-                        <span>ⓘ Applies Sem 3+</span>
-                      </div>
-                      <div className="flex justify-between text-slate-400">
-                        <span>Clinical Charges</span>
-                        <span>ⓘ Applies Sem 3</span>
-                      </div>
-                    </>
-                  )}
-                  <div className="flex justify-between font-bold pt-3 border-t border-slate-100">
-                    <span>TOTAL DEMAND</span>
-                    <span>{formatPKR(totalFee)}</span>
+                  <div>
+                    <Label>Bank/Cheque ref {payMode === 'Cheque' ? '*' : ''}</Label>
+                    <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} placeholder={payMode === 'Cheque' ? 'Cheque No. required' : 'TRX / UTR (optional)'} />
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Missing template warning */}
-          {!feeTemplate && (
-            <div className="flex items-center gap-2.5 bg-amber-50/80 border border-amber-100 rounded-xl p-4 text-sm text-amber-600">
-              <AlertTriangle size={16} />
-              <span>
-                No fee template found for {subCourseDef?.label ?? formData.program} ·{' '}
-                {courseDef ? getTermLabel(courseDef.system, formData.semester) : formData.semester} —{' '}
-                you can add the demand manually from the student's ledger after saving.
-              </span>
-            </div>
+              )}
+              {payNum > 0 && (
+                <div className="text-sm bg-slate-50 rounded-xl p-3">
+                  Demand {formatPKR(totalFee)} − Paid {formatPKR(payNum)} = <strong>Balance {formatPKR(totalFee - payNum)}</strong>
+                </div>
+              )}
+              {payNum === 0 && (
+                <p className="text-xs text-slate-400">Leave 0 to skip receipt — a dues slip (no payment) is still recorded via the Sem-1 demand.</p>
+              )}
+            </CardContent>
+          </Card>
+          {submitError && (
+            <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-600">{submitError}</div>
           )}
         </div>
       )}
@@ -647,8 +906,8 @@ export default function NewAdmission() {
               Next: {step === 1 ? 'Course & Program' : 'Review'}
             </Button>
           ) : (
-            <Button type="submit">
-              Save Admission
+            <Button type="submit" disabled={saving || totalFee <= 0}>
+              {saving ? 'Saving...' : 'Save Admission'}
             </Button>
           )}
         </div>
