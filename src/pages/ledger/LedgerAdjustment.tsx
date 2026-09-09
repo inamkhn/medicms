@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ADJUSTMENT_TYPES } from '@/lib/constants';
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import type { LedgerTransaction } from '@/types';
 
@@ -20,7 +20,8 @@ export default function LedgerAdjustment() {
   const navigate = useNavigate();
 
   const storeStudents = useStudentStore(s => s.students);
-  const student = getStudentsWithBalance(storeStudents).find(s => s.sno.toString() === sno);
+  const ledgerTxns = useLedgerStore(s => s.transactions);
+  const student = getStudentsWithBalanceLive(storeStudents, ledgerTxns).find(s => s.sno.toString() === sno);
   const [adjType, setAdjType] = useState('');
   const [amount, setAmount] = useState('');
   const [effect, setEffect] = useState<'reduce' | 'increase'>('reduce');

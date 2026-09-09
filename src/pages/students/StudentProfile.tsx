@@ -13,8 +13,9 @@ import { useAuthStore, useStudentStore } from '@/stores';
 import { canWrite } from '@/stores/authStore';
 import { formatDate, formatCNIC, formatPKR, formatBalanceDisplay, getTermLabel } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
+import { getNextTerm } from '@/lib/promotion';
 import { INSTITUTE_INFO } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive, getBalanceBreakdown } from '@/lib/balance';
 import { useLedgerStore } from '@/stores';
 
 export default function StudentProfile() {
@@ -25,7 +26,12 @@ export default function StudentProfile() {
   const [modalMode, setModalMode] = useState<'strike' | 'reverse' | null>(null);
 
   const students = useStudentStore((s) => s.students);
-  const student = getStudentsWithBalance(students).find((s) => s.sno.toString() === sno);
+  // Live balance from ledger (single source of truth) — stable selector + memo filter
+  const allLedgerForBalance = useLedgerStore((s) => s.transactions);
+  const student = useMemo(
+    () => getStudentsWithBalanceLive(students, allLedgerForBalance).find((s) => s.sno.toString() === sno),
+    [students, allLedgerForBalance, sno]
+  );
 
   // Esc navigates back (modal closes first when open)
   useEffect(() => {
@@ -50,14 +56,17 @@ export default function StudentProfile() {
   }
 
   const subDef = getSubCourseDef(student.program);
+  const hasNextTerm = getNextTerm(student.program, student.semester) !== null;
   const termNoun = subDef.course.system === 'annual' ? 'Year' : subDef.course.system === 'months' ? 'Term' : 'Semester';
   const balanceDisplay = formatBalanceDisplay(student.computedBalance);
 
-  // Demanded / paid mini-summary from the ledger (live store) — selector must be stable
+  // Demanded / charges / discounts / paid breakdown from the ledger (live store) — selector must be stable
   const allLedger = useLedgerStore((s) => s.transactions);
   const ledger = useMemo(() => allLedger.filter((t) => t.studentSno === student.sno), [allLedger, student.sno]);
-  const totalDemanded = ledger.reduce((sum, t) => sum + t.fees, 0);
-  const totalPaid = ledger.reduce((sum, t) => sum + t.payment, 0);
+  const { totalDemanded, totalCharges, totalDiscount, totalPaid } = useMemo(
+    () => getBalanceBreakdown(student.sno, allLedger),
+    [allLedger, student.sno]
+  );
 
   return (
     <div className="w-auto space-y-6">
@@ -244,9 +253,14 @@ export default function StudentProfile() {
                 );
               })()}
               <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}>
-                  <Plus size={14} className="mr-1.5" /> Add Demand
-                </Button>
+                {canEdit && hasNextTerm && (
+                  <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
+                    <Plus size={14} className="mr-1.5" /> Promote to Next Semester
+                  </Button>
+                )}
+                {canEdit && !hasNextTerm && (
+                  <span className="text-xs text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-lg px-2.5 py-1.5">Program complete — final term reached</span>
+                )}
                 <Button variant="ghost" size="sm" onClick={() => navigate(`/ledger/${student.sno}`)}>Full Ledger</Button>
               </div>
             </CardContent>
@@ -273,6 +287,14 @@ export default function StudentProfile() {
                   <span className="text-xs text-slate-400">Paid</span>
                   <div className="text-sm font-semibold text-emerald-600 mt-0.5">{formatPKR(totalPaid)}</div>
                 </div>
+                <div>
+                  <span className="text-xs text-slate-400">Charges</span>
+                  <div className="text-sm font-semibold text-purple-600 mt-0.5">{formatPKR(totalCharges)}</div>
+                </div>
+                <div>
+                  <span className="text-xs text-slate-400">Discounts</span>
+                  <div className="text-sm font-semibold text-teal-600 mt-0.5">{formatPKR(totalDiscount)}</div>
+                </div>
               </div>
               <div className="text-xs text-slate-400 mt-3">
                 Computed from ledger — never from Dues column
@@ -290,11 +312,14 @@ export default function StudentProfile() {
                 <CreditCard size={14} className="mr-1.5" />
                 Record Payment
               </Button>
-              {canEdit && (
+              {canEdit && hasNextTerm && (
                 <Button size="sm" className="w-full" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
                   <Plus size={14} className="mr-1.5" />
                   Promote to Next Semester
                 </Button>
+              )}
+              {canEdit && !hasNextTerm && (
+                <div className="text-xs text-center text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-lg px-2.5 py-2">Program complete — final term reached</div>
               )}
 
               {canEdit && (
@@ -330,16 +355,10 @@ export default function StudentProfile() {
               )}
 
               {canEdit && (
-                <div className="grid grid-cols-2 gap-2.5">
-                  <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}>
-                    <Plus size={14} className="mr-1.5" />
-                    Add Fee Demand
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}/add-charge`)}>
-                    <Scale size={14} className="mr-1.5" />
-                    Add Charge
-                  </Button>
-                </div>
+                <Button variant="outline" size="sm" className="w-full" onClick={() => navigate(`/ledger/${student.sno}/add-charge`)}>
+                  <Scale size={14} className="mr-1.5" />
+                  Add Extra Fee / Fine
+                </Button>
               )}
             </CardContent>
           </Card>

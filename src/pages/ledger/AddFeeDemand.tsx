@@ -16,10 +16,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getSubCourseDef } from '@/lib/constants';
+import { getSubCourseDef, SESSION_OPTIONS } from '@/lib/constants';
 import { formatPKR, getFeeWarnings, getTermLabel } from '@/lib/utils';
 import { splitFee, getPromotionFee } from '@/lib/promotion';
-import { getStudentsWithBalance, MOCK_FEE_TEMPLATES } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
+import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import type { Semester, LedgerTransaction } from '@/types';
 
@@ -28,7 +29,8 @@ export default function AddFeeDemand() {
   const navigate = useNavigate();
 
   const students = useStudentStore((s) => s.students);
-  const student = getStudentsWithBalance(students).find(s => s.sno.toString() === sno);
+  const ledgerTxns = useLedgerStore((s) => s.transactions);
+  const student = getStudentsWithBalanceLive(students, ledgerTxns).find(s => s.sno.toString() === sno);
 
   // Course system of the student's sub-course
   const subDef = student ? getSubCourseDef(student.program) : null;
@@ -57,7 +59,10 @@ export default function AddFeeDemand() {
 
   const templateSplit = template ? splitFee(template) : { full: 0, recurring: 0, oneTime: 0 };
   const lockedFee = getPromotionFee(student);
-  const total = template ? templateSplit.full : lockedFee;
+  // First term bills the full fee (one-time + recurring); later terms bill
+  // recurring only — re-charging the admission fee would be an overcharge.
+  const isFirstTerm = subDef ? subDef.sub.terms[0] === semester : semester === '1st';
+  const total = template ? (isFirstTerm ? templateSplit.full : templateSplit.recurring) : lockedFee;
 
   // Collect warnings
   const warnings: string[] = [];
@@ -112,11 +117,15 @@ export default function AddFeeDemand() {
           <ArrowLeft size={20} />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Add Fee Demand</h1>
+          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Re-bill Fee Demand <span className="text-sm font-normal text-slate-400">(correction only)</span></h1>
           <p className="text-sm text-slate-500 mt-1">
             {student.name} ({subDef ? `${subDef.course.label} — ${subDef.sub.label}` : student.program} · {student.batch} · SNO: {student.sno})
           </p>
         </div>
+      </div>
+
+      <div className="text-sm text-amber-700 bg-amber-50/80 border border-amber-100 rounded-xl p-3">
+        Normal semester billing uses <button className="underline font-medium" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>Promote to Next Semester</button> (advances term + bills recurring fee). Use this page only to correct a missed or wrong demand.
       </div>
 
       {/* Term & Session */}
@@ -143,17 +152,21 @@ export default function AddFeeDemand() {
             </div>
             <div>
               <Label>Session</Label>
-              <Input
-                value={session}
-                onChange={(e) => setSession(e.target.value)}
-                placeholder="e.g. 2018"
-              />
+              <Select value={session} onValueChange={setSession}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{SESSION_OPTIONS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
           </div>
 
           {template && (
             <div className="text-sm text-blue-600 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
               Template loaded: {subDef ? subDef.sub.label : student.program} · {subDef ? getTermLabel(subDef.course.system, semester) : semester} · {student.batch}
+              <div className="mt-1 text-xs">
+                {isFirstTerm
+                  ? `First term — full fee incl. one-time heads (${formatPKR(templateSplit.oneTime)}) + recurring (${formatPKR(templateSplit.recurring)}).`
+                  : `Later term — recurring only (${formatPKR(templateSplit.recurring)}). One-time heads (${formatPKR(templateSplit.oneTime)}) excluded to avoid re-charging admission fee.`}
+              </div>
             </div>
           )}
         </CardContent>
@@ -167,16 +180,16 @@ export default function AddFeeDemand() {
         <CardContent>
           {template ? (
             <div className="space-y-2 text-sm">
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Admission Fee</span>
+              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
+                <span>Admission Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
                 <span>{formatPKR(template.admissionFee)}</span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-slate-100">
                 <span>Tuition Fee</span>
                 <span>{formatPKR(template.tuitionFee)}</span>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>ID Card Fee</span>
+              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
+                <span>ID Card Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
                 <span>{formatPKR(template.idCardFee)}</span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-slate-100">
@@ -188,12 +201,12 @@ export default function AddFeeDemand() {
                   )}
                 </div>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Security Fee</span>
+              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
+                <span>Security Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
                 <span className="text-slate-400">{formatPKR(template.securityFee)}</span>
               </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Enrollment Fee</span>
+              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
+                <span>Enrollment Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
                 <span>{formatPKR(template.enrollmentFee)}</span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-slate-100">

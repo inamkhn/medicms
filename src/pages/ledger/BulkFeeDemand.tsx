@@ -1,5 +1,5 @@
 // ============================================
-// MediCMS Desktop v4.0 - Bulk Fee Demand (Batch Promote)
+// MediCMS Desktop v4.0 - Batch Promotion (whole batch to next term)
 // ============================================
 
 import { useState, useMemo } from 'react';
@@ -15,9 +15,9 @@ import { COURSES, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/c
 import { formatPKR, getTermLabel } from '@/lib/utils';
 import { splitFee, getPromotionFee } from '@/lib/promotion';
 import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import { useBatchStore } from '@/stores/batchStore';
-import { getStudentsWithBalance } from '@/lib/mockData';
 import type { CourseCode, ProgramCode, Semester } from '@/types';
 import type { LedgerTransaction } from '@/types';
 
@@ -42,13 +42,13 @@ export default function BulkFeeDemand() {
   const templateSplit = template ? splitFee(template) : { full: 0, recurring: 0, oneTime: 0 };
   const programBatches = useBatchStore((s) => s.batches).filter((b) => program !== '' && b.program === program && b.isActive);
 
-  const allWithBalance = getStudentsWithBalance(students);
+  const ledgerAll = useLedgerStore(s => s.transactions);
+  const allWithBalance = getStudentsWithBalanceLive(students, ledgerAll);
   const filtered = useMemo(() => {
     if (!course || !program || !batch) return [];
     return allWithBalance.filter(s => s.course === course && s.program === program && s.batch === batch && !s.isTestRecord);
   }, [allWithBalance, course, program, batch]);
 
-  const ledgerAll = useLedgerStore(s => s.transactions);
   const preview = useMemo(() => {
     return filtered.map(s => {
       const hasDemand = ledgerAll.some(t => t.studentSno === s.sno && t.type === 'Demand' && t.semester === semester && String(t.session) === String(session));
@@ -99,17 +99,23 @@ export default function BulkFeeDemand() {
         payment: 0,
         receiptNo: null,
         receivedBy: null,
-        narration: `Bulk demand — ${getSubCourseDef(program as ProgramCode).sub.label} ${getTermLabel(courseDef!.system, semester)} Session ${session}`,
+        narration: `Batch promotion — ${getSubCourseDef(program as ProgramCode).sub.label} ${getTermLabel(courseDef!.system, semester)} Session ${session}`,
         createdAt: new Date().toISOString(),
         createdBy: userName,
         synced: false,
       };
       addTx(tx);
-      if (updateSemester) updStudent(s.sno, { semester });
+      if (updateSemester) {
+        const patch: Partial<typeof s> = { semester, session: parseInt(session, 10) || s.session };
+        // Backfill locked recurring fee only when the student has none —
+        // never overwrite an admission-locked fee with a changed template.
+        if (s.baseFeeRecurring == null && p.fee > 0) patch.baseFeeRecurring = p.fee;
+        updStudent(s.sno, patch);
+      }
       created++;
     }
     const subLabel = getSubCourseDef(program as ProgramCode).sub.label;
-    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', details: `Bulk demand ${subLabel} ${getTermLabel(courseDef!.system, semester)} Session ${session} — ${created} created, ${duplicateCount} duplicate skipped (${batch})` });
+    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', details: `Batch promotion ${subLabel} ${getTermLabel(courseDef!.system, semester)} Session ${session} — ${created} created, ${duplicateCount} duplicate skipped (${batch})` });
     setLoading(false);
     setResult({ created, skipped: duplicateCount, noTemplate: noTemplateCount });
   };
@@ -119,7 +125,7 @@ export default function BulkFeeDemand() {
       <Card className="max-w-xl mx-auto">
         <CardContent className="py-10 text-center">
           <CheckCircle2 size={48} className="mx-auto text-emerald-500" />
-          <h2 className="text-xl font-bold mt-4">Bulk Demand Completed</h2>
+          <h2 className="text-xl font-bold mt-4">Batch Promotion Completed</h2>
           <p className="text-sm text-slate-500 mt-2">{result.created} demands created · {result.skipped} duplicate skipped {result.noTemplate ? `· ${result.noTemplate} no template` : ''}</p>
           <div className="flex justify-center gap-3 mt-6">
             <Button variant="outline" onClick={() => setResult(null)}>Back</Button>
@@ -135,8 +141,8 @@ export default function BulkFeeDemand() {
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="icon" onClick={() => navigate(-1)}><ArrowLeft size={20} /></Button>
         <div className="flex-1">
-          <h1 className="text-3xl font-bold tracking-tight">Bulk Fee Demand</h1>
-          <p className="text-sm text-slate-500 mt-1">Promote a whole batch to next term — one template × many students</p>
+          <h1 className="text-3xl font-bold tracking-tight">Batch Promotion</h1>
+          <p className="text-sm text-slate-500 mt-1">Promote a whole batch to the next term — one template × many students</p>
         </div>
       </div>
 

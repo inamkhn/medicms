@@ -18,7 +18,8 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { formatPKR, formatDate, formatBalanceDisplay } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getNextTerm } from '@/lib/promotion';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { canWrite } from '@/stores/authStore';
 import { useAuthStore, useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 import type { TransactionType } from '@/types';
@@ -29,6 +30,8 @@ const TYPE_COLORS: Record<TransactionType, string> = {
   Disc: 'bg-teal-50 text-teal-600 border border-teal-100',
   Exam: 'bg-amber-50 text-amber-600 border border-amber-100',
   CT: 'bg-purple-50 text-purple-600 border border-purple-100',
+  Annual: 'bg-indigo-50 text-indigo-600 border border-indigo-100',
+  Fine: 'bg-orange-50 text-orange-600 border border-orange-100',
   Adj: 'bg-slate-50 text-slate-600 border border-slate-100',
   Refund: 'bg-pink-50 text-pink-600 border border-pink-100',
 };
@@ -40,15 +43,16 @@ export default function StudentLedger() {
   const canEdit = canWrite(user?.role);
 
   const students = useStudentStore((s) => s.students);
-  const allStudents = getStudentsWithBalance(students);
+  // Get transactions first (stable selector), then resolve student with LIVE balance
+  const allTransactions = useLedgerStore((s) => s.transactions);
+  const allStudents = getStudentsWithBalanceLive(students, allTransactions);
   const student = allStudents.find(s => s.sno.toString() === sno);
 
   if (!student) {
     return <div className="p-8 text-center text-slate-400">Student not found (SNO: {sno})</div>;
   }
 
-  // Get transactions for this student (live store — stable selector + memo filter)
-  const allTransactions = useLedgerStore((s) => s.transactions);
+  // Transactions for this student (memo filter)
   const transactions = useMemo(() => allTransactions.filter(t => t.studentSno === student.sno), [allTransactions, student.sno]);
 
   // Compute running balance (fees + charges - discount - payment)
@@ -67,6 +71,7 @@ export default function StudentLedger() {
   const totalCharges = transactions.reduce((s, t) => s + (t.discount < 0 ? Math.abs(t.discount) : 0), 0);
   const liveBalance = totalDemanded + totalCharges - totalDiscount - totalPaid;
   const balanceDisplay = formatBalanceDisplay(liveBalance);
+  const hasNextTerm = getNextTerm(student.program, student.semester) !== null;
 
   const instituteName = useSettingsStore((s) => s.instituteName);
   const instituteAddress = useSettingsStore((s) => s.instituteAddress);
@@ -177,28 +182,38 @@ export default function StudentLedger() {
         </Table>
       </Card>
 
-      {/* Actions — compact toolbar */}
+      {/* Actions — Promote is the primary flow; manual re-bill is correction-only */}
       {canEdit && (
-        <div className="flex gap-1.5 print:hidden">
-          <Button size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}>
-            <Plus size={12} className="mr-1.5" />
-            Demand
+        <div className="flex flex-wrap gap-1.5 print:hidden">
+          {hasNextTerm ? (
+            <Button size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
+              <Plus size={12} className="mr-1.5" />
+              Promote to Next Semester
+            </Button>
+          ) : (
+            <span className="text-[11px] text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-lg px-2.5 py-1.5">Program complete — final term</span>
+          )}
+          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/payments/record?sno=${student.sno}`)}>
+            <CreditCard size={12} className="mr-1.5" />
+            Payment
           </Button>
           <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/add-charge`)}>
             <Scale size={12} className="mr-1.5" />
-            Charge
+            Extra Fee / Fine
           </Button>
           <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/adjust`)}>
             <SlidersHorizontal size={12} className="mr-1.5" />
             Adjust
           </Button>
-          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/payments/record?sno=${student.sno}`)}>
-            <CreditCard size={12} className="mr-1.5" />
-            Payment
-          </Button>
-          <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-[12px] text-slate-500"
+            title="Correction only — normal semester billing uses Promote to Next Semester"
+            onClick={() => navigate(`/ledger/${student.sno}/add-demand`)}
+          >
             <Plus size={12} className="mr-1.5" />
-            Promote
+            Re-bill (correction)
           </Button>
         </div>
       )}

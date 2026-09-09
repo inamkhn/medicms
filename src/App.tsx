@@ -15,6 +15,7 @@ import Reports from '@/pages/Reports';
 import Settings from '@/pages/Settings';
 import EditStudent from '@/pages/students/EditStudent';
 import StudentLedger from '@/pages/ledger/StudentLedger';
+import LedgerHub from '@/pages/ledger/LedgerHub';
 import AddFeeDemand from '@/pages/ledger/AddFeeDemand';
 import BulkFeeDemand from '@/pages/ledger/BulkFeeDemand';
 import AddCharge from '@/pages/ledger/AddCharge';
@@ -53,7 +54,9 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="students" element={<StudentList />} />
-          <Route path="ledger" element={<Navigate to="/students" replace />} />
+          <Route path="ledger" element={<LedgerHub />} />
+          <Route path="ledger/bulk-demand" element={<AdminRoute><BulkFeeDemand /></AdminRoute>} />
+          <Route path="ledger/:sno" element={<StudentLedger />} />
           <Route path="admissions/new" element={<AdminRoute><NewAdmission /></AdminRoute>} />
           <Route path="payments/record" element={<AdminRoute><RecordPayment /></AdminRoute>} />
           <Route path="payments/reprint" element={<ReprintReceipt />} />
@@ -61,8 +64,6 @@ export default function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="students/:sno" element={<StudentProfile />} />
           <Route path="students/:sno/edit" element={<AdminRoute><EditStudent /></AdminRoute>} />
-          <Route path="ledger/:sno" element={<StudentLedger />} />
-          <Route path="ledger/bulk-demand" element={<AdminRoute><BulkFeeDemand /></AdminRoute>} />
           <Route path="ledger/:sno/add-demand" element={<AdminRoute><AddFeeDemand /></AdminRoute>} />
           <Route path="ledger/:sno/add-charge" element={<AdminRoute><AddCharge /></AdminRoute>} />
           <Route path="ledger/:sno/adjust" element={<AdminRoute><LedgerAdjustment /></AdminRoute>} />

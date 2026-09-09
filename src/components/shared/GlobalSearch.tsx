@@ -7,7 +7,7 @@ import { Search, X, User, Receipt, UserPlus, CreditCard, FileText, Building2, Hi
 import { useNavigate } from 'react-router-dom';
 import { cn, formatDate } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 
 interface SearchResult {
@@ -22,7 +22,7 @@ interface SearchResult {
 const ACTIONS: { id: string; label: string; subtitle: string; to: string; icon: any; shortcut?: string }[] = [
   { id: 'new-admission', label: 'New Admission', subtitle: 'Add a new student', to: '/admissions/new', icon: UserPlus, shortcut: 'Ctrl+N' },
   { id: 'record-payment', label: 'Record Payment', subtitle: 'Cash / Bank receipt', to: '/payments/record', icon: CreditCard, shortcut: 'Ctrl+P' },
-  { id: 'bulk-demand', label: 'Bulk Fee Demand', subtitle: 'Promote batch', to: '/ledger/bulk-demand', icon: FileText },
+  { id: 'bulk-demand', label: 'Batch Promotion', subtitle: 'Promote whole batch', to: '/ledger/bulk-demand', icon: FileText },
   { id: 'students', label: 'Go to Students', subtitle: 'List & filters', to: '/students', icon: Users },
   { id: 'reports', label: 'Go to Reports', subtitle: '16 reports', to: '/reports', icon: FileText, shortcut: 'Ctrl+D' },
   { id: 'batches', label: 'Go to Batches', subtitle: 'Per-program batches', to: '/batches', icon: History },
@@ -63,7 +63,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
     }
 
     const q = query.toLowerCase();
-    const students = getStudentsWithBalance(storeStudents).filter(s => {
+    const students = getStudentsWithBalanceLive(storeStudents, ledgerTransactions).filter(s => {
       if (!showTestRecords && s.isTestRecord) return false;
       const { courseLabel, subLabel } = (() => {
         try { const d = getSubCourseDef(s.program); return { courseLabel: d.course.label, subLabel: d.sub.label }; } catch { return { courseLabel: '', subLabel: '' }; }

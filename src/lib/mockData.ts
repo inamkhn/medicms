@@ -595,6 +595,8 @@ export function getStudentBalance(sno: number): number {
 }
 
 // --- Helper: Get students with computed balance ---
+// @deprecated — static MOCK_BALANCES source. Use getStudentsWithBalanceLive(students, transactions)
+// from '@/lib/balance' (live ledger, single source of truth) instead.
 export function getStudentsWithBalance(students: Student[] = MOCK_STUDENTS): StudentWithBalance[] {
   return students.map(student => {
     const balance = getStudentBalance(student.sno);

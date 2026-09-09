@@ -109,7 +109,9 @@ export type TransactionType =
   | 'Disc'     // Discount/waiver
   | 'Exam'     // Exam fee
   | 'CT'       // Clinical Training
-  | 'Adj'      // Ledger adjustment
+  | 'Annual'   // Annual charges
+  | 'Fine'     // Fines (late, library, equipment, other)
+  | 'Adj'      // Ledger adjustment (corrections/waivers only)
   | 'Refund';  // Refund to student
 
 export interface LedgerTransaction {

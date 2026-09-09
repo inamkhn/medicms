@@ -18,11 +18,11 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { useAuthStore, useStudentStore, useSettingsStore, useAuditStore } from '@/stores';
+import { useAuthStore, useStudentStore, useSettingsStore, useAuditStore, useLedgerStore } from '@/stores';
 import { canWrite } from '@/stores/authStore';
 import { normalizeCNIC, normalizeContact } from '@/lib/utils';
 
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import {
   COURSES, SESSION_OPTIONS, SEMESTER_OPTIONS,
   getCourseDef, getSubCourseDef,
@@ -172,6 +172,7 @@ export default function StudentList() {
   const canEdit = canWrite(user?.role);
   const storeStudents = useStudentStore((s) => s.students);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
+  const ledgerTxns = useLedgerStore((s) => s.transactions);
 
   const [search, setSearch] = useState('');
   const [courseFilter, setCourseFilter] = useState('all');
@@ -193,7 +194,7 @@ export default function StudentList() {
   const [importHeader, setImportHeader] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const allStudents = getStudentsWithBalance(storeStudents).filter((s) => showTestRecords || !s.isTestRecord);
+  const allStudents = getStudentsWithBalanceLive(storeStudents, ledgerTxns).filter((s) => showTestRecords || !s.isTestRecord);
 
   const filterProgramOptions = courseFilter === 'all'
     ? COURSES.flatMap((c) => c.subCourses)

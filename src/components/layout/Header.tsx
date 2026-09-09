@@ -2,7 +2,7 @@
 // MediCMS Desktop v4.0 - Header
 // ============================================
 
-import { Search, LogOut } from 'lucide-react';
+import { Search, LogOut, PanelLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SyncIndicator } from '@/components/shared/SyncIndicator';
 import { useAuthStore, useUIStore } from '@/stores';
@@ -11,6 +11,7 @@ import { INSTITUTE_INFO } from '@/lib/constants';
 export function Header() {
   const { user, logout } = useAuthStore();
   const openSearch = useUIStore((s) => s.openSearch);
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
   const initials = user?.name
     ? user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
@@ -20,6 +21,9 @@ export function Header() {
     <header className="border-b border-slate-200 bg-white/95 backdrop-blur flex items-center justify-between px-4 py-3 shrink-0 select-none" style={{ WebkitAppRegion: 'drag' } as any}>
       {/* Logo & Institute Name — drag region */}
       <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as any}>
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={toggleSidebar} title="Toggle sidebar">
+          <PanelLeft size={14} />
+        </Button>
         <div className="w-6 h-6 bg-blue-600 rounded-md flex items-center justify-center">
           <span className="text-white font-bold text-[11px]">M</span>
         </div>

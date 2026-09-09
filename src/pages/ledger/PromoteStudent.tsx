@@ -10,10 +10,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { getSubCourseDef } from '@/lib/constants';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { SESSION_OPTIONS, getSubCourseDef } from '@/lib/constants';
 import { formatPKR, getTermLabel } from '@/lib/utils';
 import { getNextTerm, getPromotionFee } from '@/lib/promotion';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import type { LedgerTransaction } from '@/types';
 
@@ -21,7 +28,8 @@ export default function PromoteStudent() {
   const { sno } = useParams<{ sno: string }>();
   const navigate = useNavigate();
   const students = useStudentStore((s) => s.students);
-  const student = getStudentsWithBalance(students).find((s) => s.sno.toString() === sno);
+  const ledgerTxns = useLedgerStore((s) => s.transactions);
+  const student = getStudentsWithBalanceLive(students, ledgerTxns).find((s) => s.sno.toString() === sno);
 
   const [session, setSession] = useState(() => String(student?.session ?? new Date().getFullYear()));
   const [narration, setNarration] = useState('');
@@ -146,7 +154,10 @@ export default function PromoteStudent() {
             </div>
             <div>
               <Label>Session *</Label>
-              <Input value={session} onChange={(e) => setSession(e.target.value)} placeholder="e.g. 2026" />
+              <Select value={session} onValueChange={setSession}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{SESSION_OPTIONS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
           </div>
           <div>

@@ -17,7 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { getTermLabel, formatCNIC, normalizeCNIC, isValidCNIC, isValidContact, normalizeContact } from '@/lib/utils';
 import { useStudentStore, useLedgerStore, useAuditStore, useAuthStore } from '@/stores';
 import type { Semester } from '@/types';
@@ -28,7 +28,8 @@ export default function EditStudent() {
 
   const students = useStudentStore((s) => s.students);
   const updateStudent = useStudentStore((s) => s.updateStudent);
-  const allStudents = getStudentsWithBalance(students);
+  const ledgerTxns = useLedgerStore((s) => s.transactions);
+  const allStudents = getStudentsWithBalanceLive(students, ledgerTxns);
   const student = allStudents.find(s => s.sno.toString() === sno);
 
   const [formData, setFormData] = useState({

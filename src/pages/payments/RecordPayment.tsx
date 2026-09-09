@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
 import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useAuthStore, useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useSettingsStore, useReceiptBookStore, useBankStore, getNextBankSno } from '@/stores';
 import { FEE_RULES, getSubCourseDef, BANK_INFO } from '@/lib/constants';
 import type { StudentWithBalance, LedgerTransaction } from '@/types';
@@ -44,9 +44,10 @@ export default function RecordPayment() {
   const receiptBooks = useReceiptBookStore(s => s.books);
   const getNextReceipt = useReceiptBookStore(s => s.getNextReceipt);
   // Allow struckOff with dues (collection), hide test unless setting enabled
+  // Live balances from ledger — single source of truth
   const students = useMemo(
-    () => getStudentsWithBalance(storeStudents).filter(s => (showTestRecords || !s.isTestRecord)),
-    [storeStudents, showTestRecords]
+    () => getStudentsWithBalanceLive(storeStudents, allLedger).filter(s => (showTestRecords || !s.isTestRecord)),
+    [storeStudents, allLedger, showTestRecords]
   );
 
   const searchResults = search.length >= 2

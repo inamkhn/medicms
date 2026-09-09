@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useUIStore, useStudentStore, useLedgerStore, useBankStore, useExpenseStore, useSettingsStore } from '@/stores';
 import { formatPKR, formatDate } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useSyncStore } from '@/stores/syncStore';
 
 export default function Dashboard() {
@@ -22,7 +22,7 @@ export default function Dashboard() {
   const expenses = useExpenseStore(s => s.expenses);
   const showTestRecords = useSettingsStore(s => s.showTestRecords);
 
-  const withBalance = getStudentsWithBalance(students).filter(s => showTestRecords || !s.isTestRecord);
+  const withBalance = getStudentsWithBalanceLive(students, ledger).filter(s => showTestRecords || !s.isTestRecord);
   const activeStudents = withBalance.filter(s => !s.struckOff).length;
   const struckOffStudents = withBalance.filter(s => s.struckOff).length;
   const totalDues = withBalance.filter(s => s.computedBalance > 0 && !s.struckOff).reduce((sum, s) => sum + s.computedBalance, 0);
@@ -170,7 +170,7 @@ export default function Dashboard() {
             </Button>
             <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/ledger/bulk-demand')}>
               <FileText size={12} className="mr-1.5" />
-              Bulk
+              Promote Batch
             </Button>
             <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/batches')}>
               <Clock size={12} className="mr-1.5" />

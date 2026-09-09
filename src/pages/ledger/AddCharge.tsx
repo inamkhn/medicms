@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CHARGE_TYPES } from '@/lib/constants';
 import { formatPKR } from '@/lib/utils';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive, getLiveBalance } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
 import type { LedgerTransaction, TransactionType } from '@/types';
 
@@ -20,7 +20,8 @@ export default function AddCharge() {
   const navigate = useNavigate();
 
   const storeStudents = useStudentStore(s => s.students);
-  const student = getStudentsWithBalance(storeStudents).find(s => s.sno.toString() === sno);
+  const ledgerTxns = useLedgerStore(s => s.transactions);
+  const student = getStudentsWithBalanceLive(storeStudents, ledgerTxns).find(s => s.sno.toString() === sno);
   const [chargeType, setChargeType] = useState<string>(CHARGE_TYPES[0].value);
   const [amount, setAmount] = useState('2700');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
@@ -51,9 +52,10 @@ export default function AddCharge() {
     setLoading(true);
     const nextTxn = getNextTxnNo(allTx, student.sno);
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
-    // Map charge type to valid TransactionType: Exam/CT keep, others -> Adj
-    const mapType: Record<string, TransactionType> = { Exam: 'Exam', CT: 'CT', Annual: 'Adj', Late: 'Adj', Library: 'Adj', Equipment: 'Adj', Other: 'Adj' };
-    const txType: TransactionType = mapType[chargeType] ?? 'Adj';
+    // Map charge type to TransactionType — deliberate charges keep their own
+    // badge (Exam/CT/Annual/Fine) so they never masquerade as Adj corrections.
+    const mapType: Record<string, TransactionType> = { Exam: 'Exam', CT: 'CT', Annual: 'Annual', Late: 'Fine', Library: 'Fine', Equipment: 'Fine', Other: 'Fine' };
+    const txType: TransactionType = mapType[chargeType] ?? 'Fine';
     const tx: LedgerTransaction = {
       id: `tx-${student.sno}-${nextTxn}-${Date.now()}`,
       studentSno: student.sno,
@@ -162,7 +164,7 @@ export default function AddCharge() {
         <CardContent className="py-5">
           <div className="text-sm text-blue-600 font-medium mb-2">Preview — What this adds to ledger:</div>
           <div className="text-sm space-y-1">
-            <div>Type: {CHARGE_TYPES.find(c => c.value === chargeType)?.label} · Fees: 0 · Discount: −{formatPKR(chargeAmount)} · Payment: 0</div>
+            <div>Type: {CHARGE_TYPES.find(c => c.value === chargeType)?.label} · Charge: +{formatPKR(chargeAmount)} · Payment: 0</div>
             <div className="font-medium">
               New Balance: {formatPKR(student.computedBalance)} → {formatPKR(newBalance)}
               <span className="text-amber-500 ml-2">(charge increases balance)</span>

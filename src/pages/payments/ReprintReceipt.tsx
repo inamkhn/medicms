@@ -10,7 +10,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
 import { formatPKR, formatDate } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
-import { getStudentsWithBalance } from '@/lib/mockData';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 import type { LedgerTransaction } from '@/types';
 
@@ -35,7 +35,7 @@ export default function ReprintReceipt() {
 
   const filtered = (search.length >= 1
     ? allReceipts.filter((t) => {
-        const student = getStudentsWithBalance(storeStudents).find((s) => s.sno === t.studentSno);
+        const student = getStudentsWithBalanceLive(storeStudents, allLedger).find((s) => s.sno === t.studentSno);
         const hay = `${t.receiptNo ?? ''} ${student?.name ?? ''} ${t.studentSno}`.toLowerCase();
         return hay.includes(search.toLowerCase());
       })
@@ -48,7 +48,7 @@ export default function ReprintReceipt() {
 
   const selected = selectedId ? allLedger.find((t) => t.id === selectedId) ?? null : null;
   const selectedStudent = selected
-    ? getStudentsWithBalance(storeStudents).find((s) => s.sno === selected.studentSno)
+    ? getStudentsWithBalanceLive(storeStudents, allLedger).find((s) => s.sno === selected.studentSno)
     : null;
 
   return (
@@ -73,7 +73,7 @@ export default function ReprintReceipt() {
             {filtered.length > 0 && (
               <div className="space-y-2">
                 {filtered.slice(0, 50).map((t) => {
-                  const student = getStudentsWithBalance(storeStudents).find((s) => s.sno === t.studentSno);
+                  const student = storeStudents.find((s) => s.sno === t.studentSno);
                   return (
                     <button
                       key={t.id}
