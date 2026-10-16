@@ -34,10 +34,10 @@ export default function LedgerHub() {
   const navigate = useNavigate();
   const storeStudents = useStudentStore((s) => s.students);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
-  const ledgerTxns = useLedgerStore((s) => s.transactions);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
   const [search, setSearch] = useState('');
 
-  const allStudents = getStudentsWithBalanceLive(storeStudents, ledgerTxns).filter(
+  const allStudents = getStudentsWithBalanceLive(storeStudents, ledgerEntries).filter(
     (s) => showTestRecords || !s.isTestRecord
   );
 

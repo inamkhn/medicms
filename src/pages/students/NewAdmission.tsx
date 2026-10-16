@@ -6,12 +6,14 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ArrowLeft, CheckCircle2, Upload, X, Image as ImageIcon, Printer } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Upload, X, Image as ImageIcon, Printer, IdCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
+import { StudentIdCard } from '@/components/students/StudentIdCard';
+import { FeeBreakdownTable } from '@/components/students/FeeBreakdownTable';
 import { 
   Select, 
   SelectContent, 
@@ -19,18 +21,32 @@ import {
   SelectTrigger, 
   SelectValue 
 } from '@/components/ui/select';
-import { COURSES, SESSION_OPTIONS, BANK_INFO, getCourseDef, getSubCourseDef } from '@/lib/constants';
+import { COURSES, BANK_INFO, getCourseDef, getSubCourseDef } from '@/lib/constants';
 import { formatPKR, getTermLabel, normalizeCNIC, normalizeContact, isValidCNIC, isValidContact } from '@/lib/utils';
-import { splitFee } from '@/lib/promotion';
+import { dayKey } from '@/lib/dates';
+import { nowISO } from '@/lib/txn';
+import { termIndexOf } from '@/lib/promotion';
 import { admissionSchema, type AdmissionFormData } from '@/lib/schemas';
-import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
+import { legacyPlanFor, templateTotalOf } from '@/lib/fee/templateCompat';
+import { findActiveFor } from '@/lib/fee/templateRules';
+import { entryId, entryProblems, feeChargeEntry } from '@/lib/ledger';
 import { useStudentStore, getNextSno } from '@/stores/studentStore';
-import { useAuditStore, useAuthStore, useLedgerStore, getNextTxnNo, useReceiptBookStore, useBankStore, getNextBankSno, useSettingsStore } from '@/stores';
-import { useBatchStore } from '@/stores/batchStore';
-import type { LedgerTransaction } from '@/types';
+import { useAuditStore, useAuthStore, useLedgerStore, useReceiptBookStore, useMoneyStore, useSettingsStore, useFeeTemplateStore } from '@/stores';
+import {
+  moneyEntryProblems,
+  nextActionNo,
+  nextMoneyEntryNo,
+  paymentMoneyEntry,
+  resolvePaymentAccount,
+  type MoneyEntry,
+} from '@/lib/finance';
+import { toastError } from '@/lib/toast';
+import { useAcademicStore } from '@/stores/academicStore';
+import { workflowBatches } from '@/lib/academic/workflowBatches';
+import type { LedgerEntry, PaymentMode } from '@/types';
 import type { ProgramCode, CourseCode, Semester, Student } from '@/types';
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 
 export default function NewAdmission() {
   const navigate = useNavigate();
@@ -48,7 +64,7 @@ export default function NewAdmission() {
       contact: '',
       cnic: '',
       address: '',
-      regDate: new Date().toISOString().split('T')[0],
+      regDate: dayKey(),
       photoUrl: null,
       dob: '',
       gender: '',
@@ -57,15 +73,14 @@ export default function NewAdmission() {
       course: '',
       program: '',
       semester: '1st',
-      batch: '17th Batch',
-      session: 2026,
+      batch: '',
+      session: '',
     },
-    mode: 'onChange',
+    mode: 'onBlur',
   });
   const formData = form.watch() as AdmissionFormData & { course: CourseCode | ''; program: ProgramCode | ''; batch: string | ''; session: number | '' };
-  const programBatches = useBatchStore((s) => s.batches).filter(
-    (b) => formData.program !== '' && b.program === formData.program && b.isActive
-  );
+  const academic = useAcademicStore();
+  const [batchId, setBatchId] = useState('');
   const isDirty = form.formState.isDirty;
 
   // Dirty guard — beforeunload + navigation confirm
@@ -88,59 +103,53 @@ export default function NewAdmission() {
   const courseDef = formData.course ? getCourseDef(formData.course) : null;
   const subCourseDef = formData.program ? getSubCourseDef(formData.program).sub : null;
 
-  // Find matching fee template (course + sub-course + term)
-  const feeTemplate = MOCK_FEE_TEMPLATES.find(t =>
-    t.program === formData.program &&
-    t.course === formData.course &&
-    t.semester === formData.semester
-  );
-
-  // Custom editable fee — init from template, admin can lower/raise per student
-  const [customFee, setCustomFee] = useState({
-    admissionFee: 0, tuitionFee: 0, idCardFee: 0, annualCharges: 0,
-    securityFee: 0, enrollmentFee: 0, diplomaFee: 0, clinicalCharges: 0,
+  // The Active template for this placement — course, program, session AND batch
+  // (§19). Which term the student joins only decides which term's charge opens their
+  // ledger: joining at Term 3 bills Term 3, it does not replay Term 1 (§5.4).
+  const templates = useFeeTemplateStore((s) => s.templates);
+  const batchOptions = workflowBatches(academic, formData, 'admission', students, templates, dayKey());
+  const selectedBatch = batchOptions.find(o => o.batch.id === batchId);
+  const startTerm = termIndexOf(formData.semester as Semester);
+  const feeTemplate = findActiveFor(templates, {
+    course: formData.course as CourseCode,
+    program: formData.program as ProgramCode,
+    session: Number(formData.session) || 0,
+    batch: formData.batch,
   });
-  const [feeTouched, setFeeTouched] = useState(false);
-  const templateKey = feeTemplate ? feeTemplate.id : `none-${formData.course}-${formData.program}-${formData.semester}`;
-  useEffect(() => {
-    if (feeTemplate) {
-      setCustomFee({
-        admissionFee: feeTemplate.admissionFee, tuitionFee: feeTemplate.tuitionFee,
-        idCardFee: feeTemplate.idCardFee, annualCharges: feeTemplate.annualCharges,
-        securityFee: feeTemplate.securityFee, enrollmentFee: feeTemplate.enrollmentFee,
-        diplomaFee: feeTemplate.diplomaFee, clinicalCharges: feeTemplate.clinicalCharges,
-      });
-    } else {
-      setCustomFee({
-        admissionFee: 0, tuitionFee: 0, idCardFee: 0, annualCharges: 0,
-        securityFee: 0, enrollmentFee: 0, diplomaFee: 0, clinicalCharges: 0,
-      });
-    }
-    setFeeTouched(false);
-  }, [templateKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // What the student locks to, derived from that template's components (§7.4).
+  const openingPlan = feeTemplate ? legacyPlanFor(feeTemplate, startTerm) : null;
 
-  const feeSplit = splitFee(customFee);
-  const totalFee = feeSplit.full;
-  const recurringFee = feeSplit.recurring;
+  // Fee lock (spec §4.2 Step 3): template lines are read-only; concession is the only editable input.
+  const templateTotal = feeTemplate ? templateTotalOf(feeTemplate, startTerm) : 0;
+  const [concession, setConcession] = useState(0);
+  const templateKey = feeTemplate ? `${feeTemplate.id}:v${feeTemplate.version}:${startTerm}` : `none-${formData.course}-${formData.program}-${formData.semester}`;
+  useEffect(() => {
+    setConcession(0);
+  }, [templateKey]);
+
+  const totalFee = Math.max(0, templateTotal - concession);
+  const recurringFee = Math.max(0, (openingPlan?.baseFeeRecurring ?? 0) - concession);
 
   // Optional payment collected at admission (payment receipt only if amount > 0)
+  const [collectNow, setCollectNow] = useState(false);
   const [payAmount, setPayAmount] = useState('');
-  const [payMode, setPayMode] = useState<'Cash' | 'Bank' | 'Online' | 'Cheque'>('Cash');
+  const [payMode, setPayMode] = useState<PaymentMode>('Cash');
   const [payRef, setPayRef] = useState('');
   const [payReceipt, setPayReceipt] = useState('');
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState('');
-  const [successPay, setSuccessPay] = useState<LedgerTransaction | null>(null);
+  const [successPay, setSuccessPay] = useState<LedgerEntry | null>(null);
   const [successDemandTotal, setSuccessDemandTotal] = useState(0);
+  const [printTarget, setPrintTarget] = useState<'receipt' | 'id'>('receipt');
   const defaultPaper = useSettingsStore((s) => s.paperSize);
   const [receiptSize, setReceiptSize] = useState<ReceiptSize>(defaultPaper);
   const receiptBooks = useReceiptBookStore((s) => s.books);
   const getNextReceipt = useReceiptBookStore((s) => s.getNextReceipt);
   const userNameForReceipt = useAuthStore((s) => s.user?.name) ?? 'Admin';
-  const payNum = parseFloat(payAmount) || 0;
+  const payNum = collectNow ? parseFloat(payAmount) || 0 : 0;
 
   useEffect(() => {
-    if (step === 3 && payNum <= 0 && !payReceipt) {
+    if (step === 4 && payNum <= 0 && !payReceipt) {
       const next = getNextReceipt(userNameForReceipt);
       if (next) setPayReceipt(next);
     }
@@ -155,26 +164,42 @@ export default function NewAdmission() {
   const contactValid = isValidContact(formData.contact);
   const emergencyValid = isValidContact(formData.emergencyContact);
   const dobValid = !formData.dob || new Date(formData.dob) <= new Date();
-  const step1Valid = formData.name.trim() !== '' && formData.fatherName.trim() !== '' && cnicValid && contactValid && emergencyValid && dobValid;
-  const step2Valid = formData.course !== '' && formData.program !== '' && formData.batch !== '';
+  const step2Valid = !!selectedBatch && !selectedBatch.disabled;
 
   // --- Real duplicate check against the store ---
   const nameQuery = formData.name.trim().toLowerCase();
   const cnicQuery = normalizeCNIC(formData.cnic);
+  const cnicDuplicate = cnicQuery !== null && isValidCNIC(cnicQuery)
+    ? students.find((s) => !s.isTestRecord && s.cnic && s.cnic.replace(/\D/g, '') === cnicQuery.replace(/\D/g, ''))
+    : undefined;
   const duplicates = students.filter((s) => {
     if (s.isTestRecord) return false;
     if (nameQuery.length >= 3 && s.name.toLowerCase() === nameQuery) return true;
-    if (cnicQuery !== null && isValidCNIC(cnicQuery) && s.cnic && s.cnic.replace(/\D/g, '') === cnicQuery.replace(/\D/g, '')) return true;
+    if (cnicDuplicate && s.sno === cnicDuplicate.sno) return true;
     return false;
   });
+  const step1Valid = formData.name.trim() !== '' && formData.fatherName.trim() !== '' && cnicValid && contactValid && emergencyValid && dobValid && !cnicDuplicate;
+
+  const [stepBanner, setStepBanner] = useState(false);
+  const focusFirstError = (fields: (keyof AdmissionFormData)[]) => {
+    for (const f of fields) {
+      if (form.formState.errors[f]) { form.setFocus(f); break; }
+    }
+  };
 
   const handleNext = async () => {
     if (step === 1) {
-      const ok = await form.trigger(['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact']);
-      if (ok && step1Valid) setStep(2);
+      const fields: (keyof AdmissionFormData)[] = ['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact'];
+      const ok = await form.trigger(fields);
+      if (ok && step1Valid) { setStepBanner(false); setStep(2); }
+      else { setStepBanner(true); focusFirstError(fields); }
     } else if (step === 2) {
-      const ok = await form.trigger(['course','program','batch','semester','session']);
-      if (ok && step2Valid) setStep(3);
+      const fields: (keyof AdmissionFormData)[] = ['course','program','batch','semester','session'];
+      const ok = await form.trigger(fields);
+      if (ok && step2Valid) { setStepBanner(false); setStep(3); }
+      else { setStepBanner(true); focusFirstError(fields); }
+    } else if (step === 3) {
+      if (feeTemplate) { setStepBanner(false); setStep(4); }
     }
   };
 
@@ -187,6 +212,9 @@ export default function NewAdmission() {
   };
 
   const handleCourseChange = (code: CourseCode) => {
+    setBatchId('');
+    form.setValue('batch', '');
+    form.setValue('session', '');
     const def = getCourseDef(code);
     const sub = def.subCourses.length === 1 ? def.subCourses[0].value : '';
     form.setValue('course', code, { shouldValidate: true });
@@ -198,11 +226,8 @@ export default function NewAdmission() {
     form.setValue('program', program, { shouldValidate: true });
     form.setValue('semester', '1st', { shouldValidate: true });
     form.setValue('batch', '', { shouldValidate: true });
-    const batches = useBatchStore.getState().batches.filter((b) => b.program === program && b.isActive);
-    if (batches.length === 1) {
-      form.setValue('batch', batches[0].name, { shouldValidate: true });
-      form.setValue('session', batches[0].session as any, { shouldValidate: true });
-    }
+    setBatchId('');
+    form.setValue('session', '');
   };
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -221,13 +246,18 @@ export default function NewAdmission() {
   const handleSubmit = form.handleSubmit((data) => {
     if (saving) return;
     setSubmitError('');
+    const currentBatch = workflowBatches(useAcademicStore.getState(), data, 'admission', useStudentStore.getState().students, useFeeTemplateStore.getState().templates, dayKey()).find(o => o.batch.id === batchId);
+    if (!currentBatch || currentBatch.disabled || currentBatch.batch.name !== data.batch || currentBatch.batch.session !== Number(data.session)) {
+      setSubmitError(currentBatch?.reason ?? 'The academic placement changed. Return to Course & Program and select an available batch.');
+      return;
+    }
     // Edge: payment guards before creating anything
     if (payNum < 0) { setSubmitError('Payment amount cannot be negative.'); return; }
     if (payNum > totalFee) { setSubmitError(`Payment ${formatPKR(payNum)} exceeds Sem-1 demand ${formatPKR(totalFee)} — reduce amount.`); return; }
     if (payNum > 0) {
       if (!payReceipt.trim()) { setSubmitError('Receipt number is required when collecting payment.'); return; }
-      const allLedger = useLedgerStore.getState().transactions;
-      const dup = allLedger.some((t) => t.receiptNo && t.receiptNo.toLowerCase() === payReceipt.trim().toLowerCase());
+      const allLedger = useLedgerStore.getState().entries;
+      const dup = allLedger.some((e) => e.type === 'Payment' && e.reference && e.reference.toLowerCase() === payReceipt.trim().toLowerCase());
       if (dup) { setSubmitError(`Receipt No. ${payReceipt.trim()} already exists.`); return; }
       const num = parseInt(payReceipt.replace('#', ''), 10);
       const book = receiptBooks.find((b) => b.isActive && num >= b.start && num <= b.end);
@@ -247,7 +277,7 @@ export default function NewAdmission() {
       regDate: data.regDate,
       photoUrl: data.photoUrl ?? null,
       dob: data.dob || null,
-      gender: (data.gender as any) || null,
+      gender: data.gender || null,
       domicile: data.domicile?.trim() || null,
       emergencyContact: normalizeContact(data.emergencyContact),
       course: data.course as CourseCode,
@@ -255,36 +285,125 @@ export default function NewAdmission() {
       semester: data.semester as Semester,
       batch: String(data.batch),
       session: sessionNum,
-      // Locked custom fee: same recurring total reused on every promotion
+      // Locked fee: opening charge minus concession; next term's charge reused on promotion
       baseFeeTotal: totalFee || undefined,
       baseFeeRecurring: recurringFee || totalFee || undefined,
-      baseFeeBreakup: { ...customFee },
+      baseFeeBreakup: openingPlan?.baseFeeBreakup,
     });
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
-    // Auto-create Sem-1 demand with the custom fee so ledger starts with dues
-    if (totalFee > 0) {
-      const allTx = useLedgerStore.getState().transactions;
-      const tx: LedgerTransaction = {
-        id: `tx-${created.sno}-1-${Date.now()}`,
+    const date = data.regDate || dayKey();
+    // One numbering run for the new student, so the opening charge, its waiver and the
+    // on-the-spot payment sit one after the other and share an action number (§5, §18).
+    const firstEntryNo = useLedgerStore.getState().nextEntryNo(created.sno);
+    const actionNo = `admission-${created.sno}-${firstEntryNo}`;
+    let cursor = firstEntryNo;
+    const batch: LedgerEntry[] = [];
+
+    // The opening term becomes a FeeCharge entry carrying the template's itemised lines (§5, §6).
+    let chargeEntryId: string | null = null;
+    if (templateTotal > 0) {
+      const charge = feeChargeEntry({
         studentSno: created.sno,
-        txnNo: getNextTxnNo(allTx, created.sno),
-        date: data.regDate || new Date().toISOString().split('T')[0],
-        type: 'Demand',
-        semester: data.semester as Semester,
-        session: sessionNum,
-        fees: totalFee,
-        discount: 0,
-        payment: 0,
-        receiptNo: null,
-        receivedBy: null,
-        narration: feeTouched
-          ? `Admission fee (custom) — ${getSubCourseDef(created.program).sub.label} ${data.semester}`
-          : `Admission fee — ${getSubCourseDef(created.program).sub.label} ${data.semester}`,
-        createdAt: new Date().toISOString(),
+        entryNo: cursor,
+        term: startTerm,
+        // Gross template charge; the concession is its own entry below, not a shrunk charge (§7.10).
+        amount: templateTotal,
+        template: feeTemplate ?? null,
+        date,
         createdBy: userName,
-        synced: false,
+        description: `Admission fee — ${getSubCourseDef(created.program).sub.label} ${data.semester}`,
+        actionNo,
+      });
+      chargeEntryId = charge.id;
+      batch.push(charge);
+      cursor++;
+    }
+    // A waiver is its own Concession entry linked to the charge, not a smaller charge (§7.10, §16).
+    if (concession > 0 && chargeEntryId) {
+      batch.push({
+        id: entryId(created.sno, cursor),
+        studentSno: created.sno,
+        entryNo: cursor,
+        date,
+        type: 'Concession',
+        amount: concession,
+        description: `Concession granted at admission — ${getSubCourseDef(created.program).sub.label} ${data.semester}`,
+        reason: `Fee concession granted at admission for ${created.name}`,
+        linkedEntryId: chargeEntryId,
+        createdBy: userName,
+        createdAt: nowISO(),
+        actionNo,
+        balanceAfter: 0,
+      });
+      cursor++;
+    }
+    // Optional on-the-spot money → a Payment entry (§6), reference holds the receipt number.
+    let payEntry: LedgerEntry | null = null;
+    if (payNum > 0) {
+      payEntry = {
+        id: entryId(created.sno, cursor),
+        studentSno: created.sno,
+        entryNo: cursor,
+        date,
+        type: 'Payment',
+        amount: payNum,
+        description: payMode === 'Cash' ? 'Admission-time collection' : `${payMode}${payRef ? ` Ref ${payRef.trim()}` : ''} — admission-time collection`,
+        reference: payReceipt.trim(),
+        paymentMode: payMode,
+        createdBy: userName,
+        createdAt: nowISO(),
+        actionNo,
+        balanceAfter: 0,
       };
-      useLedgerStore.getState().addTransaction(tx);
+      batch.push(payEntry);
+    }
+
+    // §8: the money side of the on-the-spot collection — the route decides the
+    // account. Built and asked before anything is written, so a refusal leaves
+    // both books untouched.
+    const today = dayKey();
+    const allEntries = useLedgerStore.getState().entries;
+    let moneyEntry: MoneyEntry | null = null;
+    const moneyProblems: string[] = [];
+    if (payNum > 0) {
+      const moneyState = useMoneyStore.getState();
+      const moneyAccount = resolvePaymentAccount(moneyState.accounts, payMode);
+      if (!moneyAccount) {
+        setSubmitError('No money account for this route — set up your money accounts first (§78.1).');
+        setSaving(false);
+        return;
+      }
+      moneyEntry = paymentMoneyEntry(
+        {
+          accountId: moneyAccount.id,
+          amount: payNum,
+          mode: payMode,
+          payee: `${created.name} (SNO ${created.sno})`,
+          receiptNo: payReceipt.trim(),
+          moneyRef: payRef.trim() || undefined,
+          date,
+          createdBy: userName,
+        },
+        { entryNo: nextMoneyEntryNo(moneyState.entries), actionNo: nextActionNo(moneyState.entries), now: nowISO() },
+      );
+      moneyProblems.push(...moneyEntryProblems(moneyEntry, {
+        accounts: moneyState.accounts,
+        entries: moneyState.entries,
+        closedMonths: moneyState.closedMonths,
+      }));
+    }
+
+    // Ask the core's own rules before writing, so the screen refuses in the ledger's
+    // words rather than inventing its own (§5, §7). postEntries then stamps the balance (§7.3).
+    const problems = batch.flatMap((entry) => entryProblems(entry, { today, all: [...allEntries, ...batch] }));
+    if (problems.length || moneyProblems.length) { setSubmitError([...problems, ...moneyProblems].join(' ')); setSaving(false); return; }
+    const outcome = useLedgerStore.getState().postEntries(batch, today);
+    if (!outcome.ok) {
+      setSubmitError(outcome.rejected.flatMap((r) => r.problems).join(' '));
+      setSaving(false);
+      return;
+    }
+    if (templateTotal > 0) {
       useAuditStore.getState().addLog({
         user: userName,
         action: 'Fee Demand',
@@ -292,42 +411,20 @@ export default function NewAdmission() {
         details: `Admission demand ${formatPKR(totalFee)} (recurring ${formatPKR(recurringFee)}) · ${created.batch}`,
       });
     }
-    // Optional on-the-spot payment → Pay txn + receipt-book consume + bank deposit
-    let payTx: LedgerTransaction | null = null;
-    if (payNum > 0) {
-      const allTx2 = useLedgerStore.getState().transactions;
-      payTx = {
-        id: `tx-${created.sno}-pay-${Date.now()}`,
-        studentSno: created.sno,
-        txnNo: getNextTxnNo(allTx2, created.sno),
-        date: data.regDate || new Date().toISOString().split('T')[0],
-        type: 'Pay',
-        fees: 0,
-        discount: 0,
-        payment: payNum,
-        receiptNo: payReceipt.trim(),
-        receivedBy: userName,
-        narration: payMode === 'Cash' ? 'Admission-time collection' : `${payMode}${payRef ? ` Ref ${payRef.trim()}` : ''} — admission-time collection`,
-        createdAt: new Date().toISOString(),
-        createdBy: userName,
-        synced: false,
-      };
-      useLedgerStore.getState().addTransaction(payTx);
+    // Receipt-book consume + the money entry for the collected cash (§8, §18, §32).
+    if (payNum > 0 && payEntry) {
       useReceiptBookStore.getState().useReceipt(payReceipt.trim(), userName);
-      if (payMode !== 'Cash') {
-        const bankTxs = useBankStore.getState().transactions;
-        const lastBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
-        useBankStore.getState().addTransaction({
-          sno: getNextBankSno(bankTxs),
-          date: data.regDate || new Date().toISOString().split('T')[0],
-          deposit: payNum,
-          withdrawal: 0,
-          balance: lastBalance + payNum,
-          narration: `Admission fee from ${created.name} (SNO:${created.sno}) · Rcpt ${payReceipt.trim()} · ${payMode}`,
-          linkedExpenseId: null,
-          isPersonal: false,
-          synced: false,
-        });
+      // §8: the money entry replaces the hand-typed bank deposit — the
+      // pre-check above asked the same rules, so a refusal here would mean the
+      // books changed between two lines; say so rather than lose it.
+      if (moneyEntry) {
+        const moneyOutcome = useMoneyStore.getState().postEntries([moneyEntry], today);
+        if (!moneyOutcome.ok) {
+          toastError({
+            title: 'Admission saved, but the money entry was refused',
+            description: moneyOutcome.rejected.flatMap((r) => r.problems).join(' '),
+          });
+        }
       }
       useAuditStore.getState().addLog({
         user: userName,
@@ -340,9 +437,9 @@ export default function NewAdmission() {
       user: userName,
       action: 'New Admission',
       studentSno: created.sno,
-      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch} · Fee ${formatPKR(totalFee)}${payTx ? ` · Paid ${formatPKR(payNum)}` : ''}`,
+      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch} · Fee ${formatPKR(totalFee)}${payEntry ? ` · Paid ${formatPKR(payNum)}` : ''}`,
     });
-    setSuccessPay(payTx);
+    setSuccessPay(payEntry);
     setSuccessDemandTotal(totalFee);
     setReceiptSize(useSettingsStore.getState().paperSize);
     setSuccess(created);
@@ -352,8 +449,15 @@ export default function NewAdmission() {
   // Enter key advances / submits the current step
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (step < 3) handleNext();
-    else handleSubmit();
+    if (step < 4) handleNext();
+    else handleConfirmAdmission();
+  };
+
+  const handleConfirmAdmission = () => {
+    const ok = window.confirm(
+      `This will lock semester 1 fees to ${formatPKR(totalFee)} for this student${payNum > 0 ? ` and record ${formatPKR(payNum)} payment` : ''}. Continue?`
+    );
+    if (ok) handleSubmit();
   };
 
   // --- Success screen (stays until admin chooses; receipt prints clean) ---
@@ -364,6 +468,7 @@ export default function NewAdmission() {
       phone: useSettingsStore.getState().institutePhone,
     };
     const subLabel = (() => { try { return getSubCourseDef(success.program).sub.label; } catch { return success.program; } })();
+    const courseLabel = (() => { try { return getSubCourseDef(success.program).course.label; } catch { return ''; } })();
     return (
       <div className="space-y-4">
         <Card className="max-w-xl mx-auto print:hidden">
@@ -375,20 +480,26 @@ export default function NewAdmission() {
             </p>
             <p className="text-sm text-slate-600 mt-2">
               Demand {formatPKR(successDemandTotal)}
-              {successPay ? <span> · Paid {formatPKR(successPay.payment)} · Balance {formatPKR(successDemandTotal - successPay.payment)}</span> : <span> · No payment collected (dues slip only)</span>}
+              {successPay ? <span> · Paid {formatPKR(successPay.amount)} · Balance {formatPKR(successDemandTotal - successPay.amount)}</span> : <span> · No payment collected (dues slip only)</span>}
             </p>
-            {successPay && (
-              <div className="flex justify-center gap-2 mt-4">
-                <Button variant={receiptSize === '80mm' ? 'default' : 'outline'} size="sm" onClick={() => setReceiptSize('80mm')}>80mm</Button>
-                <Button variant={receiptSize === 'A4' ? 'default' : 'outline'} size="sm" onClick={() => setReceiptSize('A4')}>A4</Button>
-                <Button size="sm" onClick={() => window.print()}>
-                  <Printer size={14} className="mr-1" /> Print Receipt
-                </Button>
-              </div>
-            )}
+            <div className="flex justify-center gap-2 mt-4">
+              {successPay && (
+                <>
+                  <Button variant={printTarget === 'receipt' ? 'default' : 'outline'} size="sm" onClick={() => setPrintTarget('receipt')}>Receipt</Button>
+                  <Button variant={receiptSize === '80mm' ? 'default' : 'outline'} size="sm" onClick={() => setReceiptSize('80mm')}>80mm</Button>
+                  <Button variant={receiptSize === 'A4' ? 'default' : 'outline'} size="sm" onClick={() => setReceiptSize('A4')}>A4</Button>
+                </>
+              )}
+              <Button variant={printTarget === 'id' ? 'default' : 'outline'} size="sm" onClick={() => setPrintTarget('id')}>
+                <IdCard size={14} className="mr-1" /> ID Card
+              </Button>
+              <Button size="sm" onClick={() => window.print()}>
+                <Printer size={14} className="mr-1" /> Print {successPay && printTarget === 'receipt' ? 'Receipt' : 'ID Card'}
+              </Button>
+            </div>
             <div className="flex flex-wrap justify-center gap-2 mt-5">
-              <Button variant="outline" onClick={() => { setSuccess(null); setSuccessPay(null); setStep(1); form.reset(); setPayAmount(''); setPayRef(''); setPayReceipt(''); }}>
-                New Admission
+              <Button variant="outline" onClick={() => { setSuccess(null); setSuccessPay(null); setPrintTarget('receipt'); setStep(1); form.reset(); setCollectNow(false); setPayAmount(''); setPayRef(''); setPayReceipt(''); setConcession(0); }}>
+                Add Another Admission
               </Button>
               <Button variant="outline" onClick={() => navigate(`/ledger/${success.sno}`)}>
                 View Ledger
@@ -404,8 +515,8 @@ export default function NewAdmission() {
             </div>
           </CardContent>
         </Card>
-        {successPay && (
-          <div className="print-area">
+        <div className="print-area">
+          {successPay && printTarget === 'receipt' ? (
             <ReceiptDoc
               size={receiptSize}
               institute={institute}
@@ -414,24 +525,36 @@ export default function NewAdmission() {
               programLabel={subLabel}
               batchLabel={success.batch}
               sessionLabel={String(success.session)}
-              receiptNo={successPay.receiptNo ?? ''}
+              receiptNo={successPay.reference ?? ''}
               date={successPay.date}
-              payment={successPay.payment}
+              payment={successPay.amount}
               mode={payMode}
               bankRef={payRef}
               demandTotal={successDemandTotal}
               prevBalance={successDemandTotal}
-              newBalance={successDemandTotal - successPay.payment}
-              receivedBy={successPay.receivedBy ?? 'Admin'}
+              newBalance={successDemandTotal - successPay.amount}
+              receivedBy={successPay.createdBy ?? 'Admin'}
             />
-          </div>
-        )}
+          ) : (
+            <StudentIdCard
+              student={success}
+              courseLabel={courseLabel}
+              programLabel={subLabel}
+              instituteName={institute.name}
+              instituteLocation={institute.address}
+            />
+          )}
+        </div>
       </div>
     );
   }
 
   return (
     <form onSubmit={handleFormSubmit} className="w-auto space-y-8">
+      <div className="text-[12px] text-slate-500">
+        <button type="button" className="hover:underline" onClick={() => navigate('/students')}>Students</button>
+        <span> / New Admission</span>
+      </div>
       {/* Header */}
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="icon" type="button" onClick={handleCancel}>
@@ -439,13 +562,15 @@ export default function NewAdmission() {
         </Button>
         <div>
           <h1 className="text-3xl font-bold text-slate-900 tracking-tight">New Admission</h1>
-          <p className="text-sm text-slate-500 mt-1">Step {step} of 3</p>
+          <p className="text-sm text-slate-500 mt-1">
+            Step {step} of 4 · {step === 1 ? 'Bio' : step === 2 ? 'Academic' : step === 3 ? 'Fees' : 'Confirm'}
+          </p>
         </div>
       </div>
 
       {/* Progress */}
       <div className="flex items-center gap-2">
-        {[1, 2, 3].map((s) => (
+        {[1, 2, 3, 4].map((s) => (
           <div
             key={s}
             className={`flex-1 h-1.5 rounded-full transition-all duration-300 ${
@@ -462,16 +587,23 @@ export default function NewAdmission() {
             <CardTitle>Personal Information</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <Label htmlFor="name">Full Name *</Label>
-              <Input id="name" {...form.register('name')} placeholder="Enter full name" className={form.formState.errors.name ? 'border-red-300' : ''} />
-              {form.formState.errors.name && <p className="text-xs text-red-500 mt-1">{form.formState.errors.name.message}</p>}
-            </div>
+            {stepBanner && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-700">
+                Check the highlighted fields before continuing.
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="name">Full Name *</Label>
+                <Input id="name" {...form.register('name')} placeholder="Enter full name" className={form.formState.errors.name ? 'border-red-300' : ''} />
+                {form.formState.errors.name && <p className="text-xs text-red-500 mt-1">{form.formState.errors.name.message}</p>}
+              </div>
 
-            <div>
-              <Label htmlFor="fatherName">Father Name *</Label>
-              <Input id="fatherName" {...form.register('fatherName')} placeholder="Enter father name" className={form.formState.errors.fatherName ? 'border-red-300' : ''} />
-              {form.formState.errors.fatherName && <p className="text-xs text-red-500 mt-1">{form.formState.errors.fatherName.message}</p>}
+              <div>
+                <Label htmlFor="fatherName">Father Name *</Label>
+                <Input id="fatherName" {...form.register('fatherName')} placeholder="Enter father name" className={form.formState.errors.fatherName ? 'border-red-300' : ''} />
+                {form.formState.errors.fatherName && <p className="text-xs text-red-500 mt-1">{form.formState.errors.fatherName.message}</p>}
+              </div>
             </div>
 
             <div>
@@ -480,14 +612,32 @@ export default function NewAdmission() {
               {form.formState.errors.contact && <p className="text-xs text-red-500 mt-1">{form.formState.errors.contact.message}</p>}
             </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label htmlFor="cnic">CNIC / B-Form</Label>
-              <Input id="cnic" {...form.register('cnic')} placeholder="Optional — leave blank if not available" className={form.formState.errors.cnic ? 'border-red-300' : ''} />
+              <Input
+                id="cnic"
+                {...form.register('cnic')}
+                placeholder="XXXXX-XXXXXXX-X — leave blank if not available"
+                className={form.formState.errors.cnic ? 'border-red-300' : ''}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, '').slice(0, 13);
+                  const masked = digits.length > 12
+                    ? `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`
+                    : digits.length > 5
+                      ? `${digits.slice(0, 5)}-${digits.slice(5)}`
+                      : digits;
+                  form.setValue('cnic', e.target.value.trim() === '' ? '' : masked, { shouldValidate: false });
+                }}
+              />
               {form.formState.errors.cnic && <p className="text-xs text-red-500 mt-1">{form.formState.errors.cnic.message}</p>}
-              {!form.formState.errors.cnic && formData.cnic && normalizeCNIC(formData.cnic) && (
-                <p className="text-xs text-slate-400 mt-1">Formatted: {normalizeCNIC(formData.cnic)!.replace(/\D/g, '').replace(/(\d{5})(\d{7})(\d{1})/, '$1-$2-$3')}</p>
-              )}
               <p className="text-xs text-slate-400 mt-1">Do NOT type "nil" or "n/a" — leave blank instead</p>
+            </div>
+              <div>
+                <Label htmlFor="dob">Date of Birth</Label>
+                <Input id="dob" type="date" {...form.register('dob')} max={new Date().toISOString().split('T')[0]} className={form.formState.errors.dob ? 'border-red-300' : ''} />
+                {form.formState.errors.dob && <p className="text-xs text-red-500 mt-1">{form.formState.errors.dob.message}</p>}
+              </div>
             </div>
 
             <div>
@@ -510,11 +660,6 @@ export default function NewAdmission() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="dob">Date of Birth</Label>
-                <Input id="dob" type="date" {...form.register('dob')} max={new Date().toISOString().split('T')[0]} className={form.formState.errors.dob ? 'border-red-300' : ''} />
-                {form.formState.errors.dob && <p className="text-xs text-red-500 mt-1">{form.formState.errors.dob.message}</p>}
-              </div>
               <div>
                 <Label>Gender</Label>
                 <Controller control={form.control} name="gender" render={({ field }) => (
@@ -569,8 +714,16 @@ export default function NewAdmission() {
               </div>
             </div>
 
-            {/* Duplicate Check */}
-            {duplicates.length > 0 && (
+            {/* Duplicate Check — CNIC match blocks progression */}
+            {cnicDuplicate && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 text-sm text-red-600">
+                This CNIC is already registered to SNO [{cnicDuplicate.sno}] —{' '}
+                <button type="button" className="underline font-medium" onClick={() => window.open(`#/students/${cnicDuplicate.sno}`, '_blank')}>
+                  View student
+                </button>
+              </div>
+            )}
+            {!cnicDuplicate && duplicates.length > 0 && (
               <div className="bg-amber-50/80 border border-amber-100 rounded-xl p-3.5 text-sm text-amber-600">
                 Possible duplicate found:{' '}
                 {duplicates.map((d) => `${d.name} (SNO: ${d.sno})`).join(', ')}{' '}
@@ -588,43 +741,76 @@ export default function NewAdmission() {
             <CardTitle>Course & Program</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {stepBanner && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-700">
+                Check the highlighted fields before continuing.
+              </div>
+            )}
             <div>
-              <Label>Course *</Label>
-              <Select
-                value={formData.course}
-                onValueChange={(v) => handleCourseChange(v as CourseCode)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select course" />
-                </SelectTrigger>
-                <SelectContent>
-                  {COURSES.map(c => (
-                    <SelectItem key={c.code} value={c.code}>{c.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {courseDef && (
-                <p className="text-xs text-slate-400 mt-1">{courseDef.durationLabel}</p>
-              )}
+              <Label>Course * (most consequential — all visible)</Label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2" role="radiogroup" aria-label="Course">
+                {COURSES.map((c) => {
+                  const active = formData.course === c.code;
+                  return (
+                    <button
+                      key={c.code}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => handleCourseChange(c.code)}
+                      className={`rounded-md border px-3 py-2 text-left text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-[#2451B8] ${
+                        active ? 'border-[#2451B8] bg-blue-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div>{c.label}</div>
+                      <div className="text-[11px] font-normal text-slate-500">{c.durationLabel}</div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <div>
+            {formData.course && (
+            <div className="program-reveal">
               <Label>Sub-course *</Label>
-              <Select
-                value={formData.program}
-                onValueChange={(v) => handleProgramChange(v as ProgramCode)}
-                disabled={!formData.course}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select sub-course" />
-                </SelectTrigger>
-                <SelectContent>
-                  {courseDef?.subCourses.map(s => (
-                    <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {courseDef && courseDef.subCourses.length > 1 ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2" role="radiogroup" aria-label="Sub-course">
+                  {courseDef.subCourses.map((s) => {
+                    const active = formData.program === s.value;
+                    return (
+                      <button
+                        key={s.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => handleProgramChange(s.value)}
+                        className={`rounded-md border px-3 py-2 text-left text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-[#2451B8] ${
+                          active ? 'border-[#2451B8] bg-blue-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <Select
+                  value={formData.program}
+                  onValueChange={(v) => handleProgramChange(v as ProgramCode)}
+                  disabled={!formData.course}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select sub-course" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {courseDef?.subCourses.map(s => (
+                      <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
+            )}
 
             <div>
               <Label>Semester / Year / Term</Label>
@@ -647,59 +833,39 @@ export default function NewAdmission() {
             </div>
 
             <div>
-              <Label>Batch * (per program)</Label>
-              <Select
-                value={formData.batch}
-                disabled={!formData.program}
-                onValueChange={(v) => {
-                  form.setValue('batch', v, { shouldValidate: true });
-                  const b = programBatches.find((x) => x.name === v);
-                  if (b) form.setValue('session', b.session as any, { shouldValidate: true });
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={formData.program ? 'Select batch' : 'Select program first'} />
-                </SelectTrigger>
+              <Label>Batch and session *</Label>
+              <Select value={batchId} disabled={!formData.program} onValueChange={(id) => {
+                const option = batchOptions.find(o => o.batch.id === id);
+                if (!option || option.disabled) return;
+                setBatchId(id);
+                form.setValue('batch', option.batch.name, { shouldValidate: true, shouldDirty: true });
+                form.setValue('session', option.batch.session, { shouldValidate: true, shouldDirty: true });
+              }}>
+                <SelectTrigger><SelectValue placeholder="Select batch and session" /></SelectTrigger>
                 <SelectContent>
-                  {programBatches.map((b) => (
-                    <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
+                  {batchOptions.map(o => (
+                    <SelectItem key={o.batch.id} value={o.batch.id} disabled={o.disabled}>
+                      {o.displayName}{o.reason ? ` — ${o.reason}` : ''}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-slate-400 mt-1">
-                {programBatches.length === 0
-                  ? 'No batches for this program yet — add one in Batches page.'
-                  : 'Auto-sets session from batch (editable)'}
+              <p className="text-meta text-ink-muted mt-1">
+                {batchOptions.length ? 'Session follows the selected batch.' : 'No available batches. Check Academic Setup and fee templates.'}
               </p>
-            </div>
-
-            <div>
-              <Label>Session (Year)</Label>
-              <Select
-                value={formData.session?.toString()}
-                onValueChange={(v) => form.setValue('session', parseInt(v), { shouldValidate: true } as any)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select session" />
-                </SelectTrigger>
-                <SelectContent>
-                  {SESSION_OPTIONS.map(y => (
-                    <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-slate-400 mt-1">Auto-synced from batch — you can override</p>
+              {selectedBatch?.disabled && <p className="text-meta text-danger">{selectedBatch.reason}</p>}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Step 3: Review */}
-      {step === 3 && (
+      {/* Step 3: Fees · Step 4: Confirm */}
+      {(step === 3 || step === 4) && (
         <div className="space-y-4">
+          {step === 4 && (
           <Card>
             <CardHeader>
-              <CardTitle>Review & Submit</CardTitle>
+              <CardTitle>Confirm — Review & Submit</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex gap-4 mb-4">
@@ -767,62 +933,57 @@ export default function NewAdmission() {
               </div>
             </CardContent>
           </Card>
+          )}
 
-          {/* Initial Fee — editable per student */}
+          {step === 3 && (
+          <>
+          {/* Step 3: Fee Structuring & Locking — receipt-style, concession only */}
           <Card>
             <CardHeader>
-              <CardTitle>
-                Admission Fee {feeTemplate ? '(from template — editable)' : '(no template — enter manually)'}
-              </CardTitle>
+              <CardTitle>Fee Structure</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-2 text-sm">
-                {([
-                  ['admissionFee', 'Admission Fee', 'one-time'],
-                  ['tuitionFee', 'Tuition Fee', 'recurring'],
-                  ['idCardFee', 'ID Card Fee', 'one-time'],
-                  ['enrollmentFee', 'Enrollment Fee', 'one-time'],
-                  ['annualCharges', 'Annual Charges', 'recurring'],
-                  ['clinicalCharges', 'Clinical Charges', 'recurring'],
-                  ['diplomaFee', 'Diploma Fee', 'recurring'],
-                  ['securityFee', 'Security Fee', 'one-time'],
-                ] as const).map(([key, label, kind]) => (
-                  <div key={key} className="flex items-center justify-between gap-3">
-                    <span>{label} <span className="text-xs text-slate-400">({kind})</span></span>
-                    <Input
-                      type="number"
-                      className="w-[140px] text-right"
-                      value={customFee[key]}
-                      min={0}
-                      onChange={(e) => {
-                        setCustomFee({ ...customFee, [key]: parseInt(e.target.value) || 0 });
-                        setFeeTouched(true);
-                      }}
-                    />
-                  </div>
-                ))}
-                <div className="flex justify-between font-bold pt-3 border-t border-slate-100">
-                  <span>SEM-1 DEMAND (full)</span>
-                  <span>{formatPKR(totalFee)}</span>
+              {!feeTemplate || !openingPlan ? (
+                <div className="text-sm text-amber-600 bg-amber-50 border border-amber-100 rounded-xl p-3">
+                  No Active fee template for {subCourseDef?.label ?? formData.program} · {formData.batch} · Session {formData.session || '-'} — go back and check the placement, or add the template under Fee Templates first.
                 </div>
-                <div className="flex justify-between text-sm text-blue-600 pt-1">
-                  <span>Locked promotion fee (recurring each semester)</span>
-                  <span>{formatPKR(recurringFee)}</span>
-                </div>
-                <p className="text-xs text-slate-400 mt-1">
-                  Lower any head for concession students — promotions will reuse {formatPKR(recurringFee)} by default.
-                  A Sem-1 demand of {formatPKR(totalFee)} is auto-created on save.
-                </p>
-              </div>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-500 mb-3">From template “{feeTemplate.name}” v{feeTemplate.version}. This fee structure locks to this student's record and won't change if the institute updates fee templates later.</p>
+                  <FeeBreakdownTable
+                    lines={openingPlan.baseFeeBreakup}
+                    total={templateTotal}
+                    totalLabel={courseDef ? `${getTermLabel(courseDef.system, formData.semester as Semester)} charge` : 'Opening term charge'}
+                    concession={concession}
+                    onConcession={(v) => setConcession(Math.min(v, templateTotal))}
+                    recurring={recurringFee}
+                    net={totalFee}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
+          </>
+          )}
 
-          {/* Optional payment at admission — receipt only if amount > 0 */}
+          {step === 4 && (
+          <>
+          {/* Step 4: optional payment at admission — receipt only if amount > 0 */}
           <Card>
             <CardHeader>
-              <CardTitle>Collect Payment Now? (optional)</CardTitle>
+              <CardTitle>Collect payment now?</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={collectNow}
+                  onChange={(e) => setCollectNow(e.target.checked)}
+                  className="w-4 h-4 accent-blue-600"
+                />
+                Collect payment now
+              </label>
+              {collectNow ? (
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label>Amount collected (PKR)</Label>
@@ -836,7 +997,7 @@ export default function NewAdmission() {
                   />
                 </div>
                 <div>
-                  <Label>Receipt No. {payNum > 0 ? '*' : ''}</Label>
+                  <Label>Receipt No.</Label>
                   <Input
                     value={payReceipt}
                     onChange={(e) => setPayReceipt(e.target.value)}
@@ -844,7 +1005,8 @@ export default function NewAdmission() {
                   />
                 </div>
               </div>
-              {payNum > 0 && (
+              ) : null}
+              {collectNow && payNum > 0 && (
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label>Mode</Label>
@@ -853,29 +1015,34 @@ export default function NewAdmission() {
                       <SelectContent>
                         <SelectItem value="Cash">Cash</SelectItem>
                         <SelectItem value="Bank">Bank Transfer — {BANK_INFO.name}</SelectItem>
-                        <SelectItem value="Online">Online / Easypaisa / JazzCash</SelectItem>
+                        <SelectItem value="Online">Online</SelectItem>
                         <SelectItem value="Cheque">Cheque</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label>Bank/Cheque ref {payMode === 'Cheque' ? '*' : ''}</Label>
-                    <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} placeholder={payMode === 'Cheque' ? 'Cheque No. required' : 'TRX / UTR (optional)'} />
+                    <Label>Bank/Cheque ref</Label>
+                    <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} placeholder="Ref (optional)" />
                   </div>
                 </div>
               )}
-              {payNum > 0 && (
+              {collectNow && payNum > 0 && (
                 <div className="text-sm bg-slate-50 rounded-xl p-3">
-                  Demand {formatPKR(totalFee)} − Paid {formatPKR(payNum)} = <strong>Balance {formatPKR(totalFee - payNum)}</strong>
+                  Demand {formatPKR(totalFee)} minus Paid {formatPKR(payNum)} equals Balance {formatPKR(totalFee - payNum)}
                 </div>
               )}
-              {payNum === 0 && (
-                <p className="text-xs text-slate-400">Leave 0 to skip receipt — a dues slip (no payment) is still recorded via the Sem-1 demand.</p>
+              {collectNow && payNum === 0 && (
+                <p className="text-xs text-slate-400">Enter an amount to print a payment receipt.</p>
+              )}
+              {!collectNow && (
+                <p className="text-xs text-slate-400">No payment — a dues slip (no payment) is recorded via the Sem-1 demand. You can collect later from Record Payment.</p>
               )}
             </CardContent>
           </Card>
           {submitError && (
             <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-600">{submitError}</div>
+          )}
+          </>
           )}
         </div>
       )}
@@ -901,13 +1068,13 @@ export default function NewAdmission() {
           {step === 2 && !step2Valid && (
             <span className="text-xs text-slate-400">Course, sub-course and batch are required</span>
           )}
-          {step < 3 ? (
-            <Button type="submit" disabled={step === 1 ? !step1Valid : !step2Valid}>
-              Next: {step === 1 ? 'Course & Program' : 'Review'}
+          {step < 4 ? (
+            <Button type="submit" disabled={step === 1 ? !step1Valid : step === 2 ? !step2Valid : false}>
+              Next: {step === 1 ? 'Academic' : step === 2 ? 'Fees' : 'Confirm'}
             </Button>
           ) : (
             <Button type="submit" disabled={saving || totalFee <= 0}>
-              {saving ? 'Saving...' : 'Save Admission'}
+              {saving ? 'Saving...' : 'Confirm Admission'}
             </Button>
           )}
         </div>

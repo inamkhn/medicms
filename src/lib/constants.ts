@@ -163,15 +163,6 @@ export const CHARGE_TYPES = [
   { value: 'Other', label: 'Other / Custom', defaultNarration: '' },
 ] as const;
 
-// --- Adjustment Types (for Ledger Adjustment screen) ---
-export const ADJUSTMENT_TYPES = [
-  { value: 'reverse', label: 'Reverse wrong entry' },
-  { value: 'grace', label: 'Grace marks waiver' },
-  { value: 'writeoff', label: 'Write-off / waiver' },
-  { value: 'refund', label: 'Refund to student' },
-  { value: 'other', label: 'Other correction' },
-] as const;
-
 // --- Institute Info ---
 export const INSTITUTE_INFO = {
   name: 'Paramedical Institute',

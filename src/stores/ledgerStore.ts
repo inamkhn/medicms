@@ -1,29 +1,93 @@
 // ============================================
-// MediCMS Desktop v4.0 - Ledger Store
-// Live ledger transactions (seeded from mock data; will be backed by SQLite later)
-// Replaces direct MOCK_LEDGER imports to ensure reads reflect writes
+// MediCMS Desktop v4.0 — Ledger Store
+//
+// The student ledger is a list of typed entries (§5), and it is append-only
+// (§7.1: "Entries are never edited or deleted. A mistake is fixed with a
+// reversal"). So this store has no update and no remove: there is `postEntries`,
+// which either takes the whole batch or writes nothing.
+//
+// Nothing here does arithmetic. Balance, unpaid charges and the §5 rules all live
+// in src/lib/ledger, so a screen cannot disagree with the ledger check.
+//
+// Persisted so a posted charge or payment survives a reload ("Nothing resets on
+// reload"). Version 2 is the typed entry model; a version 0 or 1 store holds the
+// old three-column rows and is converted on the way in (§7.10).
 // ============================================
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { MOCK_LEDGER } from '@/lib/mockData';
-import type { LedgerTransaction } from '@/types';
+import { entryProblems, nextEntryNo, withStoredBalances } from '@/lib/ledger';
+import { migrateLegacyRows, type LegacyLedgerRow } from '@/lib/ledger';
+import type { LedgerEntry } from '@/types';
+
+/** What a batch of posted entries came to (§7.1: the screen shows this, not a throw). */
+export interface PostOutcome {
+  ok: boolean;
+  /** Entries refused with the §5 / §6 / §7 sentences that explain each one. */
+  rejected: { id: string; problems: string[] }[];
+}
 
 interface LedgerState {
-  transactions: LedgerTransaction[];
-  addTransaction: (tx: LedgerTransaction) => void;
-  getByStudent: (sno: number) => LedgerTransaction[];
+  entries: LedgerEntry[];
+  /**
+   * Append a finished batch. `today` is the caller's local date, because the pure
+   * core never reads a clock (§7.4 needs it to refuse a future-dated payment).
+   */
+  postEntries: (batch: readonly LedgerEntry[], today: string) => PostOutcome;
+  getByStudent: (sno: number) => LedgerEntry[];
+  /** The number the next entry of this student will take (§5). */
+  nextEntryNo: (sno: number) => number;
 }
 
-export const useLedgerStore = create<LedgerState>((set, get) => ({
-  transactions: [...MOCK_LEDGER],
+export const useLedgerStore = create<LedgerState>()(
+  persist(
+    (set, get) => ({
+      entries: migrateLegacyRows(MOCK_LEDGER),
 
-  addTransaction: (tx) =>
-    set((state) => ({ transactions: [...state.transactions, tx] })),
+      postEntries: (batch, today) => {
+        const existing = get().entries;
+        const known = new Set(existing.map((entry) => entry.id));
+        const rejected: PostOutcome['rejected'] = [];
 
-  getByStudent: (sno) => get().transactions.filter((t) => t.studentSno === sno),
-}));
+        for (const entry of batch) {
+          const problems = entryProblems(entry, {
+            today,
+            // A batch may link to an entry it is posting alongside itself, so the
+            // link check sees the ledger as it will be, not only as it was.
+            all: [...existing, ...batch],
+          });
+          if (known.has(entry.id)) {
+            problems.push(`Entry ${entry.id} is already in the ledger — numbers only go forward (§5).`);
+          }
+          if (problems.length) rejected.push({ id: entry.id, problems });
+        }
 
-export function getNextTxnNo(transactions: LedgerTransaction[], studentSno: number): number {
-  const max = Math.max(0, ...transactions.filter(t => t.studentSno === studentSno).map(t => t.txnNo));
-  return max + 1;
-}
+        if (rejected.length) return { ok: false, rejected };
+
+        const stamped = withStoredBalances(existing, batch);
+        set((state) => ({ entries: [...state.entries, ...stamped] }));
+        return { ok: true, rejected: [] };
+      },
+
+      getByStudent: (sno) => get().entries.filter((entry) => entry.studentSno === sno),
+
+      nextEntryNo: (sno) => nextEntryNo(get().entries, sno),
+    }),
+    {
+      name: 'medicms-ledger',
+      version: 2,
+      partialize: (state) => ({ entries: state.entries }),
+      migrate: (persisted) => {
+        const stored = (persisted ?? {}) as {
+          transactions?: LegacyLedgerRow[];
+          entries?: LedgerEntry[];
+        };
+        return {
+          // v0 and v1 stored rows of `{ fees, discount, payment }`; v2 stores entries.
+          entries: stored.entries ?? migrateLegacyRows(stored.transactions ?? []),
+        };
+      },
+    },
+  ),
+);

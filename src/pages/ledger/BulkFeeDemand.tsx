@@ -2,122 +2,168 @@
 // MediCMS Desktop v4.0 - Batch Promotion (whole batch to next term)
 // ============================================
 
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { COURSES, SESSION_OPTIONS, getCourseDef, getSubCourseDef } from '@/lib/constants';
+import { COURSES, getCourseDef, getSubCourseDef } from '@/lib/constants';
 import { formatPKR, getTermLabel } from '@/lib/utils';
-import { splitFee, getPromotionFee } from '@/lib/promotion';
-import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
+import { todayISO } from '@/lib/txn';
+import { getPromotionFee, termIndexOf } from '@/lib/promotion';
+import { templateCourseTotal, templateTotalOf } from '@/lib/fee/templateCompat';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
-import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
-import { useBatchStore } from '@/stores/batchStore';
+import { feeChargeEntry } from '@/lib/ledger';
+import { useStudentStore, useLedgerStore, useAuditStore, useAuthStore, useFeeTemplateStore } from '@/stores';
+import { useAcademicStore } from '@/stores/academicStore';
+import { workflowBatches } from '@/lib/academic/workflowBatches';
+import { studentsInBatch } from '@/lib/academic/batchMembership';
+import { BulkActionPreviewTable } from '@/components/ledger/BulkActionPreviewTable';
 import type { CourseCode, ProgramCode, Semester } from '@/types';
-import type { LedgerTransaction } from '@/types';
 
 export default function BulkFeeDemand() {
   const navigate = useNavigate();
   const students = useStudentStore(s => s.students);
   const [course, setCourse] = useState<CourseCode | ''>('');
   const [program, setProgram] = useState<ProgramCode | ''>('');
-  const [batch, setBatch] = useState<string>('');
+  const [batchId, setBatch] = useState<string>('');
+  const academic = useAcademicStore();
   const [semester, setSemester] = useState<Semester>('' as Semester);
-  const [session, setSession] = useState<string>(String(new Date().getFullYear()));
   const [updateSemester, setUpdateSemester] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ created: number; skipped: number; noTemplate: number } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [result, setResult] = useState<{ created: number; skipped: number; noTemplate: number; excluded: number; failures: { sno: number; name: string; error: string }[] } | null>(null);
   const [error, setError] = useState('');
+  const [deselected, setDeselected] = useState<Set<number>>(new Set());
 
   const courseDef = course ? getCourseDef(course) : null;
   const programOptions = course ? getCourseDef(course).subCourses : [];
   const semesterOptions = program ? getSubCourseDef(program as ProgramCode).sub.terms : [];
 
-  const template = course && program && semester ? MOCK_FEE_TEMPLATES.find(t => t.course === course && t.program === program && t.semester === semester) : null;
-  const templateSplit = template ? splitFee(template) : { full: 0, recurring: 0, oneTime: 0 };
-  const programBatches = useBatchStore((s) => s.batches).filter((b) => program !== '' && b.program === program && b.isActive);
+  // Active template for the placement being billed — session and batch included,
+  // so a batch-specific template is not mistaken for the all-batches one (§7.3).
+  const templates = useFeeTemplateStore((s) => s.templates);
+  const batchOptions = workflowBatches(academic, { course, program }, 'promotion', students, templates, todayISO());
+  const selectedBatch = batchOptions.find(o => o.batch.id === batchId)?.batch;
+  const batch = selectedBatch?.name ?? '';
+  const session = selectedBatch ? String(selectedBatch.session) : '';
+  const findActive = useFeeTemplateStore((s) => s.findActive);
+  const template = course && program && semester && selectedBatch
+    ? findActive({ course, program, session: Number(session) || 0, batch }) ?? null
+    : null;
+  // What the term being billed costs under that template, from the engine.
+  const templateTermTotal = template ? templateTotalOf(template, termIndexOf(semester)) : 0;
 
-  const ledgerAll = useLedgerStore(s => s.transactions);
+
+  const ledgerAll = useLedgerStore(s => s.entries);
   const allWithBalance = getStudentsWithBalanceLive(students, ledgerAll);
-  const filtered = useMemo(() => {
-    if (!course || !program || !batch) return [];
-    return allWithBalance.filter(s => s.course === course && s.program === program && s.batch === batch && !s.isTestRecord);
-  }, [allWithBalance, course, program, batch]);
+  const selectedProgram = academic.programs.find(p => p.id === selectedBatch?.programId);
+  const batchStudents = selectedBatch
+    ? studentsInBatch(selectedBatch, selectedProgram, allWithBalance).filter(s => !s.isTestRecord)
+    : [];
+  // Spec §3.5: no demands to struck-off students — excluded explicitly, never silently.
+  const excludedCount = batchStudents.filter(s => s.struckOff).length;
+  const filtered = batchStudents.filter(s => !s.struckOff);
+  const termToBill = semester === ('' as Semester) ? null : termIndexOf(semester);
 
-  const preview = useMemo(() => {
-    return filtered.map(s => {
-      const hasDemand = ledgerAll.some(t => t.studentSno === s.sno && t.type === 'Demand' && t.semester === semester && String(t.session) === String(session));
-      const fee = getPromotionFee(s) || templateSplit.recurring || templateSplit.full;
-      const hasFee = fee > 0;
-      const status = !hasFee ? 'no-template' : hasDemand ? 'duplicate' : 'ready';
-      return { student: s, status, fee };
-    });
-  }, [filtered, ledgerAll, semester, session, templateSplit.recurring, templateSplit.full]);
+  // No manual memo here: the template total is derived from a store lookup, and a
+  // useMemo over it made React Compiler give up on this component entirely
+  // (react-hooks/preserve-manual-memoization). The compiler memoizes this map itself.
+  const preview = filtered.map(s => {
+    // One fee charge per student per term (§5): the term, not the session, is what the
+    // entry records, so that is what a second billing would duplicate.
+    const hasDemand = termToBill !== null && ledgerAll.some(t => t.studentSno === s.sno && t.type === 'FeeCharge' && t.term === termToBill);
+    // The student's own locked figure first; only an unlocked student is priced
+    // from the template's charge for this term (§16).
+    const fee = getPromotionFee(s, templates) || templateTermTotal;
+    const hasFee = fee > 0;
+    const status = (!hasFee ? 'no-fee' : hasDemand ? 'duplicate' : 'ready') as 'ready' | 'duplicate' | 'no-fee';
+    return { student: s, status, fee, checked: status === 'ready' && !deselected.has(s.sno) };
+  });
 
-  const readyCount = preview.filter(p => p.status === 'ready').length;
+  const readyCount = preview.filter(p => p.status === 'ready' && p.checked).length;
   const duplicateCount = preview.filter(p => p.status === 'duplicate').length;
-  const noTemplateCount = preview.filter(p => p.status === 'no-template').length;
+  const noTemplateCount = preview.filter(p => p.status === 'no-fee').length;
 
   const handleCourseChange = (v: CourseCode) => {
     setCourse(v);
     const def = getCourseDef(v);
-    setProgram(def.subCourses.length === 1 ? def.subCourses[0].value : '' as any);
+    setProgram(def.subCourses.length === 1 ? def.subCourses[0].value : '');
     setBatch('');
     setSemester('' as Semester);
+    setDeselected(new Set());
   };
 
   const handleGenerate = async () => {
     setError('');
-    if (!course || !program || !batch || !semester || !session) { setError('Course, program, batch, term and session are required.'); return; }
-    if (readyCount === 0) { setError('No eligible students (all duplicates or no fee).'); return; }
-    setLoading(true);
-    let created = 0, skipped = 0;
-    const userName = useAuthStore.getState().user?.name ?? 'Admin';
-    const addTx = useLedgerStore.getState().addTransaction;
-    const updStudent = useStudentStore.getState().updateStudent;
-    // snapshot for getNextTxnNo per student (need fresh per student after each add)
-    for (const p of preview) {
-      if (p.status !== 'ready') { skipped++; continue; }
-      const s = p.student;
-      const allTxNow = useLedgerStore.getState().transactions;
-      const nextTxn = getNextTxnNo(allTxNow, s.sno);
-      const tx: LedgerTransaction = {
-        id: `tx-${s.sno}-${nextTxn}-${Date.now()}-${Math.random().toString(36).slice(2,4)}`,
-        studentSno: s.sno,
-        txnNo: nextTxn,
-        date: new Date().toISOString().split('T')[0],
-        type: 'Demand',
-        semester,
-        session: parseInt(session, 10) || undefined,
-        fees: p.fee,
-        discount: 0,
-        payment: 0,
-        receiptNo: null,
-        receivedBy: null,
-        narration: `Batch promotion — ${getSubCourseDef(program as ProgramCode).sub.label} ${getTermLabel(courseDef!.system, semester)} Session ${session}`,
-        createdAt: new Date().toISOString(),
-        createdBy: userName,
-        synced: false,
-      };
-      addTx(tx);
-      if (updateSemester) {
-        const patch: Partial<typeof s> = { semester, session: parseInt(session, 10) || s.session };
-        // Backfill locked recurring fee only when the student has none —
-        // never overwrite an admission-locked fee with a changed template.
-        if (s.baseFeeRecurring == null && p.fee > 0) patch.baseFeeRecurring = p.fee;
-        updStudent(s.sno, patch);
-      }
-      created++;
-    }
+    if (!course || !program || !selectedBatch || !semester || !session) { setError('Course, program, batch, term and session are required.'); return; }
+    const liveBatch = workflowBatches(useAcademicStore.getState(), { course, program }, 'promotion', useStudentStore.getState().students, useFeeTemplateStore.getState().templates, todayISO()).find(o => o.batch.id === batchId);
+    if (!liveBatch || liveBatch.batch.name !== batch || liveBatch.batch.session !== Number(session)) { setError('The batch changed. Select a running batch again.'); return; }
     const subLabel = getSubCourseDef(program as ProgramCode).sub.label;
-    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', details: `Batch promotion ${subLabel} ${getTermLabel(courseDef!.system, semester)} Session ${session} — ${created} created, ${duplicateCount} duplicate skipped (${batch})` });
+    const termLabel = getTermLabel(courseDef!.system, semester);
+    const selected = preview.filter(p => p.status === 'ready' && p.checked);
+    if (selected.length === 0) { setError('No eligible students selected (all duplicates, no fee, or deselected).'); return; }
+    setLoading(true);
+    setProgress({ done: 0, total: selected.length });
+    let created = 0, skipped = 0;
+    const failures: { sno: number; name: string; error: string }[] = [];
+    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+    const date = todayISO();
+    const term = termToBill ?? 0;
+    // Every charge this run posts shares one action number, so the ledger, the audit
+    // trail and a later reversal can speak about one batch act (§5, §18).
+    const actionNo = `bulk-${program}-${batch}-${term}-${date}`;
+    const updStudent = useStudentStore.getState().updateStudent;
+    let done = 0;
+    for (const p of preview) {
+      if (p.status !== 'ready' || !p.checked) { if (p.status === 'ready') skipped++; continue; }
+      const s = p.student;
+      try {
+        const allNow = useLedgerStore.getState().entries;
+        // Re-check duplicate at post time (ledger may have changed)
+        const dupNow = allNow.some(e => e.studentSno === s.sno && e.type === 'FeeCharge' && e.term === term);
+        if (dupNow) { skipped++; continue; }
+        const entry = feeChargeEntry({
+          studentSno: s.sno,
+          entryNo: useLedgerStore.getState().nextEntryNo(s.sno),
+          term,
+          // Each student's own locked rate first, so the template's breakdown is
+          // attached only where it is the same money (§5: lines must add up).
+          amount: p.fee,
+          template,
+          date,
+          createdBy: userName,
+          description: `Batch promotion — ${subLabel} ${termLabel} Session ${session}`,
+          actionNo,
+        });
+        const outcome = useLedgerStore.getState().postEntries([entry], date);
+        if (!outcome.ok) {
+          failures.push({ sno: s.sno, name: s.name, error: outcome.rejected.flatMap(r => r.problems).join(' ') });
+          continue;
+        }
+        if (updateSemester) {
+          const patch: Partial<typeof s> = { semester };
+          // Backfill locked recurring fee only when the student has none —
+          // never overwrite an admission-locked fee with a changed template.
+          if (s.baseFeeRecurring == null && p.fee > 0) patch.baseFeeRecurring = p.fee;
+          updStudent(s.sno, patch);
+        }
+        created++;
+      } catch (e) {
+        failures.push({ sno: s.sno, name: s.name, error: e instanceof Error ? e.message : 'Post failed' });
+      }
+      done++;
+      setProgress({ done, total: selected.length });
+      // Yield so the determinate progress repaints instead of hanging the UI
+      await new Promise(r => setTimeout(r, 0));
+    }
+    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', details: `Batch promotion ${subLabel} ${termLabel} Session ${session} — ${created} created, ${duplicateCount} duplicate skipped, ${excludedCount} struck-off excluded (${batch})` });
     setLoading(false);
-    setResult({ created, skipped: duplicateCount, noTemplate: noTemplateCount });
+    setProgress(null);
+    setResult({ created, skipped, noTemplate: noTemplateCount, excluded: excludedCount, failures });
   };
 
   if (result) {
@@ -126,7 +172,21 @@ export default function BulkFeeDemand() {
         <CardContent className="py-10 text-center">
           <CheckCircle2 size={48} className="mx-auto text-emerald-500" />
           <h2 className="text-xl font-bold mt-4">Batch Promotion Completed</h2>
-          <p className="text-sm text-slate-500 mt-2">{result.created} demands created · {result.skipped} duplicate skipped {result.noTemplate ? `· ${result.noTemplate} no template` : ''}</p>
+          <p className="text-sm text-slate-500 mt-2">
+            {result.created} demands posted successfully · {result.skipped} skipped (deselected or already billed)
+            {result.noTemplate ? ` · ${result.noTemplate} no fee` : ''}
+            {result.excluded ? ` · ${result.excluded} struck-off excluded` : ''}
+          </p>
+          {result.failures.length > 0 && (
+            <div className="mt-4 text-left bg-red-50 border border-red-100 rounded-xl p-3">
+              <div className="text-sm font-medium text-red-700">{result.failures.length} failed — view details:</div>
+              <ul className="mt-1 text-xs text-red-600 space-y-1 max-h-32 overflow-auto">
+                {result.failures.map(f => (
+                  <li key={f.sno}>SNO:{f.sno} {f.name} — {f.error}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="flex justify-center gap-3 mt-6">
             <Button variant="outline" onClick={() => setResult(null)}>Back</Button>
             <Button onClick={() => navigate('/students')}>Go to Students</Button>
@@ -159,7 +219,7 @@ export default function BulkFeeDemand() {
             </div>
             <div>
               <Label>Sub-course *</Label>
-              <Select value={program} onValueChange={v => { setProgram(v as ProgramCode); setBatch(''); setSemester('' as Semester); }} disabled={!course}>
+              <Select value={program} onValueChange={v => { setProgram(v as ProgramCode); setBatch(''); setSemester('' as Semester); setDeselected(new Set()); }} disabled={!course}>
                 <SelectTrigger><SelectValue placeholder="Select sub-course" /></SelectTrigger>
                 <SelectContent>{programOptions.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}</SelectContent>
               </Select>
@@ -168,28 +228,25 @@ export default function BulkFeeDemand() {
           <div className="grid grid-cols-3 gap-4">
             <div>
               <Label>Batch * (per program)</Label>
-              <Select value={batch} onValueChange={setBatch} disabled={!program}>
+              <Select value={batchId} onValueChange={v => { setBatch(v); setDeselected(new Set()); }} disabled={!program}>
                 <SelectTrigger><SelectValue placeholder={program ? 'Select batch' : 'Select program first'} /></SelectTrigger>
                 <SelectContent>
-                  {programBatches.map((b) => (
-                    <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
+                  {batchOptions.map(({ batch: b, displayName }) => (
+                    <SelectItem key={b.id} value={b.id}>{displayName}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
               <Label>Term *</Label>
-              <Select value={semester} onValueChange={v => setSemester(v as Semester)} disabled={!program}>
+              <Select value={semester} onValueChange={v => { setSemester(v as Semester); setDeselected(new Set()); }} disabled={!program}>
                 <SelectTrigger><SelectValue placeholder="Select term" /></SelectTrigger>
                 <SelectContent>{semesterOptions.map(t => <SelectItem key={t} value={t}>{courseDef ? getTermLabel(courseDef.system, t) : t}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div>
               <Label>Session *</Label>
-              <Select value={session} onValueChange={setSession}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{SESSION_OPTIONS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
-              </Select>
+              <p className="text-body text-ink">{session || 'Select a batch'}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -200,9 +257,9 @@ export default function BulkFeeDemand() {
             <div className="text-sm bg-blue-50 border border-blue-100 rounded-xl p-3">
               Promotion default: locked recurring fee per student
               {template && (
-                <span> · Template {getSubCourseDef(program as ProgramCode).sub.label} {courseDef ? getTermLabel(courseDef.system, semester) : semester}: recurring {formatPKR(templateSplit.recurring)} (full {formatPKR(templateSplit.full)})</span>
+                <span> · Template "{template.name}" v{template.version}: {formatPKR(templateTermTotal)} at this term (course total {formatPKR(templateCourseTotal(template))})</span>
               )}
-              {!template && <span className="text-amber-700"> · No template — uses each student's locked fee; students without a locked fee will show as no-fee.</span>}
+              {!template && <span className="text-amber-700"> · No Active template for this placement — uses each student's locked fee; students without a locked fee will show as no-fee.</span>}
             </div>
           ) : null}
         </CardContent>
@@ -210,46 +267,45 @@ export default function BulkFeeDemand() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Users size={16} /> Preview — {filtered.length} students in batch</CardTitle>
+          <CardTitle className="flex items-center gap-2"><Users size={16} /> Preview — {filtered.length} active students match this filter</CardTitle>
         </CardHeader>
         <CardContent>
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && batchStudents.length === 0 ? (
             <div className="text-sm text-slate-400 py-6 text-center">Select course / sub-course / batch to preview</div>
           ) : (
             <>
-              <div className="flex gap-2 text-xs mb-3">
+              <div className="flex flex-wrap gap-2 text-xs mb-3">
                 <Badge className="bg-emerald-50 text-emerald-600 border border-emerald-100">{readyCount} ready</Badge>
                 {duplicateCount > 0 && <Badge className="bg-amber-50 text-amber-600 border border-amber-100">{duplicateCount} duplicate (already has demand)</Badge>}
-                {noTemplateCount > 0 && <Badge className="bg-red-50 text-red-600 border border-red-100">{noTemplateCount} no template</Badge>}
+                {noTemplateCount > 0 && <Badge className="bg-red-50 text-red-600 border border-red-100">{noTemplateCount} no fee</Badge>}
+                {excludedCount > 0 && <span className="text-slate-500 self-center">{excludedCount} struck-off students excluded automatically</span>}
               </div>
-              <div className="max-h-80 overflow-auto border rounded-xl">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>SNO</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Current Term</TableHead>
-                      <TableHead className="text-right">Fee</TableHead>
-                      <TableHead>Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {preview.slice(0, 100).map(p => (
-                      <TableRow key={p.student.sno}>
-                        <TableCell>{p.student.sno}</TableCell>
-                        <TableCell>{p.student.name}<div className="text-xs text-slate-500">{p.student.fatherName}</div></TableCell>
-                        <TableCell>{getTermLabel(getSubCourseDef(p.student.program).sub.terms.includes(p.student.semester) ? getSubCourseDef(p.student.program).course.system : 'semester', p.student.semester)}</TableCell>
-                        <TableCell className="text-right">{p.fee > 0 ? formatPKR(p.fee) : '—'}</TableCell>
-                        <TableCell>
-                          {p.status === 'ready' && <Badge className="bg-emerald-50 text-emerald-600 border border-emerald-100">Ready</Badge>}
-                          {p.status === 'duplicate' && <Badge className="bg-amber-50 text-amber-600 border border-amber-100">Already demanded</Badge>}
-                          {p.status === 'no-template' && <Badge className="bg-red-50 text-red-600 border border-red-100">No fee</Badge>}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+              <BulkActionPreviewTable
+                rows={preview.map(p => ({
+                  key: p.student.sno,
+                  title: `${p.student.sno} · ${p.student.name}`,
+                  subtitle: p.student.fatherName,
+                  term: getTermLabel(getSubCourseDef(p.student.program).sub.terms.includes(p.student.semester) ? getSubCourseDef(p.student.program).course.system : 'semester', p.student.semester),
+                  fee: p.fee,
+                  status: p.status,
+                  checked: p.checked,
+                }))}
+                onToggle={(key) => {
+                  const sno = Number(key);
+                  setDeselected(prev => {
+                    const next = new Set(prev);
+                    if (next.has(sno)) next.delete(sno);
+                    else next.add(sno);
+                    return next;
+                  });
+                }}
+                onToggleAll={(checked) => {
+                  setDeselected(() => {
+                    if (checked) return new Set();
+                    return new Set(preview.filter(p => p.status === 'ready').map(p => p.student.sno));
+                  });
+                }}
+              />
               {preview.length > 100 && <div className="text-xs text-slate-400 mt-2">Showing 100 of {preview.length}</div>}
             </>
           )}
@@ -258,10 +314,19 @@ export default function BulkFeeDemand() {
 
       {error && <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-600">{error}</div>}
 
+      {progress && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-sm text-blue-700">
+          Posting {progress.done} of {progress.total}…
+          <div className="mt-2 h-1.5 rounded-full bg-blue-100 overflow-hidden">
+            <div className="h-full bg-blue-600 transition-all" style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} />
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
         <Button onClick={handleGenerate} disabled={loading || readyCount === 0}>
-          {loading ? 'Generating...' : `Generate ${readyCount} Demands`}
+          {loading && progress ? `Posting ${progress.done} of ${progress.total}…` : `Post to ${readyCount} Students`}
         </Button>
       </div>
     </div>

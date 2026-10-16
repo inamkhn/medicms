@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, X, User, Receipt, UserPlus, CreditCard, FileText, Building2, History, LayoutDashboard, Users, Settings as SettingsIcon } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn, formatDate } from '@/lib/utils';
 import { getSubCourseDef } from '@/lib/constants';
@@ -19,7 +20,7 @@ interface SearchResult {
   badgeColor?: string;
 }
 
-const ACTIONS: { id: string; label: string; subtitle: string; to: string; icon: any; shortcut?: string }[] = [
+const ACTIONS: { id: string; label: string; subtitle: string; to: string; icon: LucideIcon; shortcut?: string }[] = [
   { id: 'new-admission', label: 'New Admission', subtitle: 'Add a new student', to: '/admissions/new', icon: UserPlus, shortcut: 'Ctrl+N' },
   { id: 'record-payment', label: 'Record Payment', subtitle: 'Cash / Bank receipt', to: '/payments/record', icon: CreditCard, shortcut: 'Ctrl+P' },
   { id: 'bulk-demand', label: 'Batch Promotion', subtitle: 'Promote whole batch', to: '/ledger/bulk-demand', icon: FileText },
@@ -27,19 +28,20 @@ const ACTIONS: { id: string; label: string; subtitle: string; to: string; icon: 
   { id: 'reports', label: 'Go to Reports', subtitle: '16 reports', to: '/reports', icon: FileText, shortcut: 'Ctrl+D' },
   { id: 'batches', label: 'Go to Batches', subtitle: 'Per-program batches', to: '/batches', icon: History },
   { id: 'bank', label: 'Go to Bank', subtitle: 'Account & import', to: '/bank', icon: Building2 },
-  { id: 'expenses', label: 'Go to Expenses', subtitle: 'Budget vs actual', to: '/expenses', icon: FileText },
+  { id: 'bills', label: 'Go to Bills and expenses', subtitle: 'Every cost recorded', to: '/finance/bills', icon: FileText },
+  { id: 'pay-out', label: 'Pay out', subtitle: 'A numbered payment voucher', to: '/finance/pay', icon: CreditCard },
+  { id: 'vouchers', label: 'Go to Vouchers', subtitle: 'Payments out register', to: '/finance/vouchers', icon: FileText },
   { id: 'dashboard', label: 'Go to Dashboard', subtitle: 'Live stats', to: '/dashboard', icon: LayoutDashboard },
   { id: 'settings', label: 'Go to Settings', subtitle: 'Receipt books & budgets', to: '/settings', icon: SettingsIcon },
 ];
 
 export function GlobalSearch({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const storeStudents = useStudentStore((s) => s.students);
-  const ledgerTransactions = useLedgerStore((s) => s.transactions);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
 
   useEffect(() => {
@@ -52,18 +54,16 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
     return ACTIONS.filter(a => `${a.label} ${a.subtitle} ${a.id}`.toLowerCase().includes(q)).slice(0, 5);
   }, [query]);
 
-  useEffect(() => {
-    if (!query.trim()) {
-      const actionResults: SearchResult[] = filteredActions.map(a => ({
-        type: 'action', id: a.id, title: a.label, subtitle: `${a.subtitle}${a.shortcut ? ` · ${a.shortcut}` : ''}`,
-      }));
-      setResults(actionResults);
-      setSelectedIndex(0);
-      return;
-    }
+  // The list is derived from the query — held in state it would take a second
+  // render for every keystroke, and a stale index with it.
+  const results = useMemo<SearchResult[]>(() => {
+    const actionResults: SearchResult[] = filteredActions.map(a => ({
+      type: 'action', id: a.id, title: a.label, subtitle: `${a.subtitle}${a.shortcut ? ` · ${a.shortcut}` : ''}`,
+    }));
+    if (!query.trim()) return actionResults;
 
     const q = query.toLowerCase();
-    const students = getStudentsWithBalanceLive(storeStudents, ledgerTransactions).filter(s => {
+    const students = getStudentsWithBalanceLive(storeStudents, ledgerEntries).filter(s => {
       if (!showTestRecords && s.isTestRecord) return false;
       const { courseLabel, subLabel } = (() => {
         try { const d = getSubCourseDef(s.program); return { courseLabel: d.course.label, subLabel: d.sub.label }; } catch { return { courseLabel: '', subLabel: '' }; }
@@ -77,13 +77,10 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
       return haystack.includes(q);
     });
 
-    const receipts = ledgerTransactions.filter(t => 
-      t.receiptNo && t.receiptNo.toLowerCase().includes(q)
+    // A receipt is the reference on a Payment entry (§5) — nothing else carries one.
+    const receipts = ledgerEntries.filter((entry) =>
+      entry.type === 'Payment' && !!entry.reference && entry.reference.toLowerCase().includes(q)
     );
-
-    const actionResults: SearchResult[] = filteredActions.map(a => ({
-      type: 'action', id: a.id, title: a.label, subtitle: `${a.subtitle}${a.shortcut ? ` · ${a.shortcut}` : ''}`,
-    }));
 
     const studentResults: SearchResult[] = students.slice(0, 5).map(s => ({
       type: 'student',
@@ -94,16 +91,15 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
       badgeColor: s.computedBalance > 0 ? 'text-amber-500' : 'text-emerald-500',
     }));
 
-    const receiptResults: SearchResult[] = receipts.slice(0, 3).map(t => ({
+    const receiptResults: SearchResult[] = receipts.slice(0, 3).map((entry) => ({
       type: 'receipt',
-      id: t.id,
-      title: `Receipt ${t.receiptNo}`,
-      subtitle: `PKR ${t.payment} · ${formatDate(t.date)}`,
+      id: entry.id,
+      title: `Receipt ${entry.reference}`,
+      subtitle: `PKR ${entry.amount} · ${formatDate(entry.date)}`,
     }));
 
-    setResults([...actionResults, ...studentResults, ...receiptResults]);
-    setSelectedIndex(0);
-  }, [query, storeStudents, ledgerTransactions, showTestRecords, filteredActions]);
+    return [...actionResults, ...studentResults, ...receiptResults];
+  }, [query, storeStudents, ledgerEntries, showTestRecords, filteredActions]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -147,7 +143,7 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
             onKeyDown={handleKeyDown}
             placeholder="Type a command or search… (students, receipts)"
             className="flex-1 text-[13px] outline-none text-slate-900 placeholder:text-slate-400 bg-transparent"

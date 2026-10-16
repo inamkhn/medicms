@@ -6,9 +6,12 @@ import { Outlet, useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { StatusBar } from './StatusBar';
 import { OfflineBanner } from '@/components/shared/OfflineBanner';
 import { GlobalSearch } from '@/components/shared/GlobalSearch';
-import { useSyncStore, useUIStore } from '@/stores';
+import { LockScreen } from '@/components/auth/LockScreen';
+import { useAutoLock } from '@/components/auth/useAutoLock';
+import { useAuthStore, useSyncStore, useUIStore } from '@/stores';
 
 // Global keyboard shortcuts (inside Router context so useNavigate works)
 function useGlobalShortcuts() {
@@ -69,12 +72,19 @@ function useGlobalShortcuts() {
 
 export function AppShell() {
   useGlobalShortcuts();
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
+  const isLocked = useAuthStore((s) => s.isLocked);
   const syncStatus = useSyncStore((s) => s.status);
   const { searchOpen, closeSearch } = useUIStore();
   const isOffline = syncStatus === 'offline';
 
+  // Idle → lock; while locked the whole shell is replaced so nothing sensitive stays
+  // painted (Feature 1 §6).
+  useAutoLock(isLoggedIn);
+  if (isLocked) return <LockScreen />;
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#F5F5F7] print:h-auto print:overflow-visible">
+    <div className="flex flex-col h-screen overflow-hidden bg-surface print:h-auto print:overflow-visible">
       <div className="print:hidden"><Header /></div>
       {isOffline && <OfflineBanner />}
       
@@ -84,6 +94,7 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+      <StatusBar />
       
       {/* Global Search Overlay */}
       {searchOpen && <GlobalSearch onClose={closeSearch} />}

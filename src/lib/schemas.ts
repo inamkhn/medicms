@@ -23,7 +23,8 @@ export const admissionSchema = z.object({
   course: z.string().min(1, 'Course is required'),
   program: z.string().min(1, 'Sub-course is required'),
   semester: z.string().min(1),
-  batch: z.string().min(1, 'Batch is required'),
+  // Unnamed academic batches are valid; admission validates the selected batch ID.
+  batch: z.string(),
   session: z.union([z.number(), z.string()]).refine(v => String(v).length === 4, { message: 'Session invalid' }),
 });
 

@@ -3,22 +3,29 @@
 // ============================================
 
 import { useState } from 'react';
-import { Search, Printer } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Search, Printer, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
 import { formatPKR, formatDate } from '@/lib/utils';
+import { todayKey } from '@/lib/dates';
+import { getPaymentMode } from '@/lib/ledger';
 import { getSubCourseDef } from '@/lib/constants';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
-import type { LedgerTransaction } from '@/types';
+import type { LedgerEntry } from '@/types';
 
 export default function ReprintReceipt() {
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // §16 click-through: the dashboard's "Collected today" links the receipt list to
+  // this day only. The chip below is the only way out, so it must be clearable.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const dateFilter = searchParams.get('date') === 'today' ? todayKey() : '';
   const storeStudents = useStudentStore((s) => s.students);
-  const allLedger = useLedgerStore((s) => s.transactions);
+  const entries = useLedgerStore((s) => s.entries);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
   const paperDefault = useSettingsStore((s) => s.paperSize);
   const [size, setSize] = useState<ReceiptSize>(paperDefault);
@@ -28,27 +35,31 @@ export default function ReprintReceipt() {
     phone: useSettingsStore((s) => s.institutePhone),
   };
 
-  // Only Pay txns with receipt numbers; key by txn id (receiptNo may repeat across books)
-  const allReceipts: LedgerTransaction[] = allLedger.filter(
-    (t) => t.type === 'Pay' && t.receiptNo && (t.payment > 0 || t.discount !== 0)
+  // Balance and badge come from one derivation, reused for every lookup below — the
+  // old code rebuilt the whole list inside a per-row filter (O(rows × students)).
+  const withBalance = getStudentsWithBalanceLive(storeStudents, entries);
+  const nameBySno = new Map(withBalance.map((s) => [s.sno, s.name] as const));
+  const testBySno = new Map(storeStudents.map((s) => [s.sno, s.isTestRecord] as const));
+
+  // A receipt is the reference on a Payment entry (§5); a charge has no receipt.
+  const allReceipts: LedgerEntry[] = entries.filter(
+    (entry) => entry.type === 'Payment' && !!entry.reference
   );
 
   const filtered = (search.length >= 1
-    ? allReceipts.filter((t) => {
-        const student = getStudentsWithBalanceLive(storeStudents, allLedger).find((s) => s.sno === t.studentSno);
-        const hay = `${t.receiptNo ?? ''} ${student?.name ?? ''} ${t.studentSno}`.toLowerCase();
+    ? allReceipts.filter((entry) => {
+        const hay = `${entry.reference ?? ''} ${nameBySno.get(entry.studentSno) ?? ''} ${entry.studentSno}`.toLowerCase();
         return hay.includes(search.toLowerCase());
       })
     : allReceipts
-  ).filter((t) => {
+  ).filter((entry) => {
     if (showTestRecords) return true;
-    const student = storeStudents.find((s) => s.sno === t.studentSno);
-    return !student?.isTestRecord;
-  });
+    return !testBySno.get(entry.studentSno);
+  }).filter((entry) => !dateFilter || entry.date.slice(0, 10) === dateFilter);
 
-  const selected = selectedId ? allLedger.find((t) => t.id === selectedId) ?? null : null;
+  const selected = selectedId ? entries.find((entry) => entry.id === selectedId) ?? null : null;
   const selectedStudent = selected
-    ? getStudentsWithBalanceLive(storeStudents, allLedger).find((s) => s.sno === selected.studentSno)
+    ? withBalance.find((s) => s.sno === selected.studentSno)
     : null;
 
   return (
@@ -69,27 +80,34 @@ export default function ReprintReceipt() {
                 placeholder="Search by receipt number or student name..."
                 className="pl-9"
               />
+              {dateFilter && (
+                <button
+                  type="button"
+                  onClick={() => setSearchParams({})}
+                  className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-control border border-hairline bg-panel px-2 py-1 text-micro text-ink-secondary hover:bg-hairline-soft"
+                >
+                  Showing {formatDate(dateFilter)} only
+                  <X size={12} />
+                </button>
+              )}
             </div>
             {filtered.length > 0 && (
               <div className="space-y-2">
-                {filtered.slice(0, 50).map((t) => {
-                  const student = storeStudents.find((s) => s.sno === t.studentSno);
-                  return (
+                {filtered.slice(0, 50).map((entry) => (
                     <button
-                      key={t.id}
-                      onClick={() => { setSelectedId(t.id); setSize(useSettingsStore.getState().paperSize); }}
+                      key={entry.id}
+                      onClick={() => { setSelectedId(entry.id); setSize(useSettingsStore.getState().paperSize); }}
                       className="w-full flex items-center justify-between p-3 rounded-xl border border-slate-100/60 hover:bg-slate-50 text-left"
                     >
                       <div>
-                        <div className="font-medium">Receipt {t.receiptNo}</div>
+                        <div className="font-medium">Receipt {entry.reference}</div>
                         <div className="text-sm text-slate-500">
-                          {student?.name ?? `SNO:${t.studentSno}`} (SNO:{t.studentSno}) · {formatDate(t.date)}
+                          {nameBySno.get(entry.studentSno) ?? `SNO:${entry.studentSno}`} (SNO:{entry.studentSno}) · {formatDate(entry.date)}
                         </div>
                       </div>
-                      <span className="font-medium">{formatPKR(t.payment)}{t.discount > 0 && <span className="text-teal-600 text-xs"> +{formatPKR(t.discount)}</span>}</span>
+                      <span className="font-medium">{formatPKR(entry.amount)}</span>
                     </button>
-                  );
-                })}
+                ))}
               </div>
             )}
             {filtered.length === 0 && (
@@ -120,14 +138,14 @@ export default function ReprintReceipt() {
               programLabel={(() => { try { return getSubCourseDef(selectedStudent.program).sub.label; } catch { return selectedStudent.program; } })()}
               batchLabel={selectedStudent.batch}
               sessionLabel={String(selectedStudent.session)}
-              receiptNo={selected.receiptNo ?? 'N/A'}
+              receiptNo={selected.reference ?? 'N/A'}
               date={selected.date}
-              payment={selected.payment}
-              discount={selected.discount > 0 ? selected.discount : 0}
-              mode={selected.narration.includes('Bank') ? 'Bank' : selected.narration.includes('Cheque') ? 'Cheque' : selected.narration.includes('Online') ? 'Online' : 'Cash'}
+              payment={selected.amount}
+              discount={0}
+              mode={getPaymentMode(selected)}
               prevBalance={undefined}
               newBalance={undefined}
-              receivedBy={selected.receivedBy ?? selected.createdBy ?? 'Admin'}
+              receivedBy={selected.createdBy ?? 'Admin'}
             />
           </div>
         </div>

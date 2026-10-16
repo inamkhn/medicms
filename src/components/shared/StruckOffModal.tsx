@@ -41,6 +41,7 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
       });
     } else {
       if (!reason) return;
+      if (reason === 'Other' && !details.trim()) return;
       strikeOff(student.sno, reason, details, date);
       useAuditStore.getState().addLog({
         user: userName,
@@ -101,18 +102,21 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
           ) : (
             /* --- Strike mode --- */
             <>
-              {/* Current balance warning */}
-              {student.computedBalance > 0 && (
+              {/* Current balance warning — always shown when balance != 0 */}
+              {student.computedBalance !== 0 && (
                 <div className="bg-amber-50/80 border border-amber-100 rounded-xl p-4">
                   <div className="flex items-center gap-2 text-amber-600">
                     <AlertTriangle size={16} />
                     <span className="text-sm font-medium">
-                      Current balance: {formatPKR(student.computedBalance)} outstanding
+                      {student.computedBalance > 0
+                        ? `Current balance: ${formatPKR(student.computedBalance)} outstanding`
+                        : `Credit balance: ${formatPKR(Math.abs(student.computedBalance))} — may need a refund`}
                     </span>
                   </div>
                   <p className="text-sm text-amber-500 mt-1.5">
-                    This student has unpaid dues. They will appear in the
-                    "Struck Off with Dues" report for collection follow-up.
+                    {student.computedBalance > 0
+                      ? 'This student has an outstanding balance of dues, which will remain on record after strike-off. They will appear in the "Struck Off with Dues" report for collection follow-up.'
+                      : 'This student holds a credit balance, which will remain on record after strike-off.'}
                   </p>
                 </div>
               )}
@@ -137,15 +141,18 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
                 </div>
               </div>
 
-              {/* Details */}
+              {/* Details — required when reason is Other */}
               <div>
-                <Label>Details</Label>
+                <Label>Details {reason === 'Other' ? '*' : ''}</Label>
                 <Input
                   value={details}
                   onChange={(e) => setDetails(e.target.value)}
-                  placeholder="Additional details (optional)"
+                  placeholder={reason === 'Other' ? 'Required — specify the reason' : 'Additional details (optional)'}
                   className="mt-2"
                 />
+                {reason === 'Other' && !details.trim() && (
+                  <p className="text-xs text-red-500 mt-1">Details are required when reason is Other</p>
+                )}
               </div>
 
               {/* Date */}
@@ -181,9 +188,9 @@ export function StruckOffModal({ student, mode, onClose }: Props) {
             <Button
               variant="destructive"
               onClick={handleConfirm}
-              disabled={!reason}
+              disabled={!reason || (reason === 'Other' && !details.trim())}
             >
-              Confirm Struck Off
+              Strike Off
             </Button>
           )}
         </div>

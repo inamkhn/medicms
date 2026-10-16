@@ -12,13 +12,52 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { formatPKR, formatBalanceDisplay } from '@/lib/utils';
+import { dayKey } from '@/lib/dates';
+import { nowISO } from '@/lib/txn';
 import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
-import { useAuthStore, useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useSettingsStore, useReceiptBookStore, useBankStore, getNextBankSno } from '@/stores';
+import {
+  REASON_MIN_LENGTH,
+  chargeStateOf,
+  entryId,
+  entryProblems,
+  liveBalanceOf,
+} from '@/lib/ledger';
+import { confirmDialog } from '@/lib/confirm';
+import { toastError, toastSuccess } from '@/lib/toast';
+import { useAuthStore, useStudentStore, useLedgerStore, useAuditStore, useSettingsStore, useReceiptBookStore, useMoneyStore } from '@/stores';
+import {
+  moneyEntryProblems,
+  nextActionNo,
+  nextMoneyEntryNo,
+  paymentMoneyEntry,
+  resolvePaymentAccount,
+} from '@/lib/finance';
 import { FEE_RULES, getSubCourseDef, BANK_INFO } from '@/lib/constants';
-import type { StudentWithBalance, LedgerTransaction } from '@/types';
+import type { StudentWithBalance, LedgerEntry, PaymentMode } from '@/types';
 
 type Step = 'search' | 'confirm' | 'payment' | 'success';
+
+/**
+ * The figures the success screen prints, read back from the ledger after the save.
+ * It is deliberately a snapshot of what was kept and not something the form works
+ * out again: the old screen took `balance - payment - discount` from a `balance`
+ * that had already been re-derived after the write, so the money went off twice (§1,
+ * §18 "shows the saved balance, never a recalculation").
+ */
+interface PostedPayment {
+  receiptNo: string;
+  date: string;
+  payment: number;
+  concession: number;
+  concessionReason: string;
+  mode: PaymentMode;
+  bankRef: string;
+  /** Balance before this save — the printed receipt's "previous balance". */
+  prevBalance: number;
+  /** Id of the Payment entry, so the screen shows the stored row rather than a copy. */
+  paymentEntryId: string;
+}
 
 export default function RecordPayment() {
   const navigate = useNavigate();
@@ -30,24 +69,29 @@ export default function RecordPayment() {
   const [search, setSearch] = useState('');
   const [selectedStudent, setSelectedStudent] = useState<StudentWithBalance | null>(null);
   const [amount, setAmount] = useState('');
-  const [discount, setDiscount] = useState('0');
-  const [discountReason, setDiscountReason] = useState('');
+  const [concession, setConcession] = useState('0');
+  const [concessionReason, setConcessionReason] = useState('');
+  /** The fee charge the concession is granted on (§16); defaults to the oldest unpaid. */
+  const [concessionChargeId, setConcessionChargeId] = useState('');
   const [receiptNo, setReceiptNo] = useState('');
   const [narration, setNarration] = useState('');
-  const [paymentMode, setPaymentMode] = useState<'Cash' | 'Bank' | 'Online' | 'Cheque'>('Cash');
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>('Cash');
   const [bankRef, setBankRef] = useState('');
   const [loading, setLoading] = useState(false);
+  const [posted, setPosted] = useState<PostedPayment | null>(null);
 
   const storeStudents = useStudentStore((s) => s.students);
   const showTestRecords = useSettingsStore(s => s.showTestRecords);
-  const allLedger = useLedgerStore(s => s.transactions);
+  // §77: a soft second-look on large cash takings — a warning, never a block.
+  const cashWarnAbove = useSettingsStore(s => s.financeLimits.cashPaymentWarningAbove);
+  const allEntries = useLedgerStore(s => s.entries);
   const receiptBooks = useReceiptBookStore(s => s.books);
   const getNextReceipt = useReceiptBookStore(s => s.getNextReceipt);
   // Allow struckOff with dues (collection), hide test unless setting enabled
-  // Live balances from ledger — single source of truth
+  // Live balances from the ledger's entries — single source of truth
   const students = useMemo(
-    () => getStudentsWithBalanceLive(storeStudents, allLedger).filter(s => (showTestRecords || !s.isTestRecord)),
-    [storeStudents, allLedger, showTestRecords]
+    () => getStudentsWithBalanceLive(storeStudents, allEntries).filter(s => (showTestRecords || !s.isTestRecord)),
+    [storeStudents, allEntries, showTestRecords]
   );
 
   const searchResults = search.length >= 2
@@ -93,75 +137,204 @@ export default function RecordPayment() {
   }, [step, user, receiptNo, getNextReceipt]);
 
   const handleSubmit = async () => {
-    if (!selectedStudent || paymentAmount <= 0) return;
-    if (discountAmount > 0 && !discountReason.trim()) return;
-    if (paymentMode === 'Cheque' && !bankRef.trim()) { alert('Cheque number is required'); return; }
-    if (!receiptNo.trim()) { alert('Receipt number is required from receipt book'); return; }
-    const dup = allLedger.some(t => t.receiptNo && t.receiptNo.toLowerCase() === receiptNo.trim().toLowerCase());
-    if (dup) { alert(`Receipt No. ${receiptNo.trim()} already exists`); return; }
-    // Validate against receipt book range
-    const num = parseInt(receiptNo.replace('#',''),10);
-    const book = receiptBooks.find(b => b.isActive && num >= b.start && num <= b.end);
-    if (!book) { alert(`Receipt ${receiptNo} not in any active book range (${receiptBooks.map(b=>`${b.bookNo}:${b.start}-${b.end}`).join(', ')})`); return; }
-    // Admin-only: direct post with confirm for large over-payment
-    if (newBalance < FEE_RULES.creditGuardThreshold) {
-      const ok = window.confirm(`Over-payment guard: balance would go to ${formatPKR(newBalance)} (below ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))}). Continue?`);
-      if (!ok) return;
-    }
-    setLoading(true);
-    const nextTxn = getNextTxnNo(allLedger, selectedStudent.sno);
+    if (!selectedStudent) return;
+    const sno = selectedStudent.sno;
     const userName = user?.name ?? 'Admin';
+    // §15 the payment belongs to the LOCAL day it was taken, not the UTC one.
+    const today = dayKey();
+    const receipt = receiptNo.trim();
+
+    if (paymentAmount <= 0) { toastError('Enter the amount received — a payment of nothing is not a payment (§6).'); return; }
+    if (paymentMode === 'Cheque' && !bankRef.trim()) { toastError('Cheque number is required.'); return; }
+    if (!receipt) { toastError('Receipt number is required from the receipt book (§17).'); return; }
+    // A receipt number is the reference on a Payment entry (§5); a charge has none.
+    const dup = allEntries.some((entry) => (entry.reference ?? '').toLowerCase() === receipt.toLowerCase());
+    if (dup) {
+      toastError({ title: `Receipt No. ${receipt} already exists`, description: 'Nothing was saved — take the next number from the book.' });
+      return;
+    }
+    // Validate against receipt book range
+    const num = parseInt(receipt.replace('#',''),10);
+    const book = receiptBooks.find(b => b.isActive && num >= b.start && num <= b.end);
+    if (!book) {
+      toastError({
+        title: `Receipt ${receipt} is not in an active book range`,
+        description: `${receiptBooks.map(b=>`${b.bookNo}:${b.start}-${b.end}`).join(', ') || 'No book is open'}. Ask an Admin for a new book (§17).`,
+      });
+      return;
+    }
+    // Admin-only: direct post with confirm for large over-payment (§17) — the ask
+    // states what will happen instead of "Are you sure?", and Escape cannot dodge it.
+    if (projectedBalance < FEE_RULES.creditGuardThreshold) {
+      const go = await confirmDialog({
+        title: 'This payment leaves a credit',
+        effect: `${selectedStudent.name} will hold ${formatPKR(-projectedBalance)} as credit — balance ${formatPKR(projectedBalance)}, past the ${formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))} guard. Credit is applied to the next charge that arrives (§25.1).`,
+        tone: 'money',
+        confirmLabel: 'Record payment',
+      });
+      if (!go) return;
+    }
+    // §77: cash above the warning limit gets one deliberate confirmation — the
+    // counter keeps moving if the person means it, so this is a second look and
+    // not a permission gate (that is what the payout/other-entry limits are for).
+    if (paymentMode === 'Cash' && cashWarnAbove > 0 && paymentAmount > cashWarnAbove) {
+      const go = await confirmDialog({
+        title: 'Large cash payment',
+        effect: `${formatPKR(paymentAmount)} in cash on receipt ${receipt} — above the ${formatPKR(cashWarnAbove)} warning (§77). Count the drawer again before you take it; the day close will have to reconcile this amount (§33).`,
+        tone: 'money',
+        confirmLabel: 'Take this cash',
+      });
+      if (!go) return;
+    }
+
     const modeLabel = paymentMode === 'Bank' ? `Bank ${BANK_INFO.name} ${bankRef ? `Ref ${bankRef}` : ''}` : paymentMode;
-    const tx: LedgerTransaction = {
-      id: `tx-${selectedStudent.sno}-${nextTxn}-${Date.now()}`,
-      studentSno: selectedStudent.sno,
-      txnNo: nextTxn,
-      date: new Date().toISOString().split('T')[0],
-      type: 'Pay',
-      fees: 0,
-      discount: discountAmount,
-      payment: paymentAmount,
-      receiptNo: receiptNo.trim() || null,
-      receivedBy: userName,
-      narration: narration.trim() || `${modeLabel}${discountAmount > 0 ? ` Discount: ${discountReason.trim()}` : ''}`,
-      createdAt: new Date().toISOString(),
-      createdBy: userName,
-      synced: false,
-    };
-    useLedgerStore.getState().addTransaction(tx);
-    useReceiptBookStore.getState().useReceipt(receiptNo.trim(), userName);
-    // Bank reconciliation — if Bank/Online/Cheque, create deposit
-    if (paymentMode !== 'Cash') {
-      const bankTxs = useBankStore.getState().transactions;
-      const nextSno = getNextBankSno(bankTxs);
-      const lastBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
-      useBankStore.getState().addTransaction({
-        sno: nextSno,
-        date: new Date().toISOString().split('T')[0],
-        deposit: paymentAmount,
-        withdrawal: 0,
-        balance: lastBalance + paymentAmount,
-        narration: `Fee from ${selectedStudent.name} (SNO:${selectedStudent.sno}) · Rcpt ${receiptNo.trim()}${bankRef ? ` · ${bankRef}` : ''} · ${modeLabel}`,
-        linkedExpenseId: null,
-        isPersonal: false,
-        synced: false,
+    const createdAt = nowISO();
+    // One numbering run for the student, so the concession and the payment of this
+    // single save sit one after the other and share an action number (§5, §18).
+    const firstEntryNo = useLedgerStore.getState().nextEntryNo(sno);
+    const actionNo = `pay-${sno}-${firstEntryNo}`;
+    const concessionEntryNo = concessionAmount > 0 ? firstEntryNo : null;
+    const paymentEntryNo = concessionEntryNo !== null ? firstEntryNo + 1 : firstEntryNo;
+
+    const batch: LedgerEntry[] = [];
+    if (concessionEntryNo !== null) {
+      batch.push({
+        id: entryId(sno, concessionEntryNo),
+        studentSno: sno,
+        entryNo: concessionEntryNo,
+        date: today,
+        type: 'Concession',
+        amount: concessionAmount,
+        description: `Concession granted at payment on receipt ${receipt}`,
+        reason: concessionReason.trim(),
+        // §16: a concession sits on a fee charge, so it is linked rather than being
+        // a smaller payment hidden inside the Pay row.
+        linkedEntryId: concessionTarget || null,
+        createdBy: userName,
+        createdAt,
+        actionNo,
+        // The store stamps the running balance on the way in (§7.3).
+        balanceAfter: 0,
       });
     }
-    useAuditStore.getState().addLog({ user: userName, action: 'Payment', studentSno: selectedStudent.sno, details: `${formatPKR(paymentAmount)}${discountAmount>0 ? ` + Disc ${formatPKR(discountAmount)} (${discountReason.trim()})` : ''} · ${modeLabel} · Rcpt ${receiptNo.trim() || 'N/A'}` });
+    batch.push({
+      id: entryId(sno, paymentEntryNo),
+      studentSno: sno,
+      entryNo: paymentEntryNo,
+      date: today,
+      type: 'Payment',
+      amount: paymentAmount,
+      description: narration.trim() || `Fee payment received · ${modeLabel}`,
+      reference: receipt,
+      paymentMode,
+      createdBy: userName,
+      createdAt,
+      actionNo,
+      balanceAfter: 0,
+    });
+
+    // §8: the money side comes by itself — the receipt's route decides the
+    // account. Built and asked before anything is written, so a refusal leaves
+    // both books untouched.
+    const moneyState = useMoneyStore.getState();
+    const moneyAccount = resolvePaymentAccount(moneyState.accounts, paymentMode);
+    if (!moneyAccount) {
+      toastError({ title: 'No money account for this route', description: 'Set up your money accounts first (§78.1) — nothing was saved.' });
+      return;
+    }
+    const moneyEntry = paymentMoneyEntry(
+      {
+        accountId: moneyAccount.id,
+        amount: paymentAmount,
+        mode: paymentMode,
+        payee: `${selectedStudent.name} (SNO ${sno})`,
+        receiptNo: receipt,
+        moneyRef: bankRef.trim() || undefined,
+        date: today,
+        createdBy: userName,
+      },
+      {
+        entryNo: nextMoneyEntryNo(moneyState.entries),
+        actionNo: nextActionNo(moneyState.entries),
+        now: createdAt,
+      },
+    );
+    const moneyProblems = moneyEntryProblems(moneyEntry, {
+      accounts: moneyState.accounts,
+      entries: moneyState.entries,
+      closedMonths: moneyState.closedMonths,
+    });
+
+    // The core's own rules asked before writing, so the screen refuses in the words
+    // the ledger check would use rather than inventing its own (§5, §7).
+    const problems = batch.flatMap((entry) => entryProblems(entry, { today, all: [...allEntries, ...batch] }));
+    if (problems.length || moneyProblems.length) {
+      toastError({
+        title: problems.length ? 'The ledger would refuse this posting' : 'The money books would refuse this entry',
+        description: [...problems, ...moneyProblems].join(' '),
+      });
+      return;
+    }
+
+    setLoading(true);
+    const outcome = useLedgerStore.getState().postEntries(batch, today);
+    if (!outcome.ok) {
+      setLoading(false);
+      toastError({ title: 'Nothing was saved', description: outcome.rejected.flatMap((r) => r.problems).join(' ') });
+      return;
+    }
+    useReceiptBookStore.getState().useReceipt(receipt, userName);
+    // §8: the money entry replaces the hand-typed bank deposit — cash lands on
+    // the counter, bank and online on the account, a cheque is held until it
+    // clears. The pre-check above asked the same rules, so a refusal here would
+    // mean the books changed between two lines; say so rather than lose it.
+    const moneyOutcome = useMoneyStore.getState().postEntries([moneyEntry], today);
+    if (!moneyOutcome.ok) {
+      toastError({
+        title: `Receipt ${receipt} is in the ledger, but the money entry was refused`,
+        description: moneyOutcome.rejected.flatMap((r) => r.problems).join(' '),
+      });
+    }
+    useAuditStore.getState().addLog({ user: userName, action: 'Payment', studentSno: sno, details: `${formatPKR(paymentAmount)}${concessionAmount>0 ? ` + Concession ${formatPKR(concessionAmount)} (${concessionReason.trim()})` : ''} · ${modeLabel} · Rcpt ${receipt}` });
+
+    setPosted({
+      receiptNo: receipt,
+      date: today,
+      payment: paymentAmount,
+      concession: concessionAmount,
+      concessionReason: concessionReason.trim(),
+      mode: paymentMode,
+      bankRef: bankRef.trim(),
+      prevBalance: balance,
+      paymentEntryId: entryId(sno, paymentEntryNo),
+    });
+    toastSuccess({ title: `Receipt ${receipt} recorded`, description: `${formatPKR(paymentAmount)} received from ${selectedStudent.name}.` });
     setLoading(false);
     setStep('success');
   };
 
-  // Live balance from ledger (not stale MOCK_BALANCES)
-  const liveBalance = useMemo(() => {
-    if (!selectedStudent) return 0;
-    const txs = allLedger.filter(t => t.studentSno === selectedStudent.sno);
-    return txs.reduce((s,t) => s + t.fees + (t.discount < 0 ? -t.discount : 0) - (t.discount > 0 ? t.discount : 0) - t.payment, 0);
-  }, [allLedger, selectedStudent]);
-  const balance = liveBalance;
+  // Live balance from the ledger (not a stale hardcoded balance)
+  const balance = useMemo(
+    () => (selectedStudent ? liveBalanceOf(selectedStudent.sno, allEntries) : 0),
+    [allEntries, selectedStudent],
+  );
   const paymentAmount = parseFloat(amount) || 0;
-  const discountAmount = parseFloat(discount) || 0;
-  const newBalance = balance - paymentAmount - discountAmount;
+  const concessionAmount = parseFloat(concession) || 0;
+  /** A preview of what the save would leave. The figure printed is the stored one. */
+  const projectedBalance = balance - paymentAmount - concessionAmount;
+
+  // Fee charges still owing, oldest first — what a concession can be granted on (§16).
+  const openCharges = useMemo(() => {
+    if (!selectedStudent) return [];
+    return chargeStateOf(allEntries.filter((entry) => entry.studentSno === selectedStudent.sno))
+      .charges
+      .filter((charge) => charge.unpaid > 0);
+  }, [allEntries, selectedStudent]);
+  // Read through the live list rather than the stored id alone: a charge paid off or
+  // reversed between selection and save falls back to the oldest open one.
+  const concessionTarget = openCharges.some((charge) => charge.entryId === concessionChargeId)
+    ? concessionChargeId
+    : openCharges[0]?.entryId ?? '';
 
   return (
     <div className="w-auto space-y-3">
@@ -289,30 +462,58 @@ export default function RecordPayment() {
               </div>
 
               <div>
-                <Label>Discount Amount (PKR)</Label>
+                <Label>Concession Amount (PKR)</Label>
                 <Input
                   type="number"
-                  value={discount}
-                  onChange={(e) => setDiscount(e.target.value)}
-                  placeholder="0 if no discount"
+                  value={concession}
+                  onChange={(e) => setConcession(e.target.value)}
+                  placeholder="0 if no concession"
                 />
               </div>
 
-              {parseFloat(discount) > 0 && (
-                <div>
-                  <Label>Discount Reason *</Label>
-                  <Input
-                    value={discountReason}
-                    onChange={(e) => setDiscountReason(e.target.value)}
-                    placeholder="Reason for discount — required"
-                  />
-                  {!discountReason.trim() && <p className="text-xs text-red-500 mt-1">Required when discount &gt; 0</p>}
-                </div>
+              {concessionAmount > 0 && (
+                <>
+                  <div>
+                    <Label>Which fee charge is it granted on?</Label>
+                    <Select
+                      value={concessionTarget || 'none'}
+                      onValueChange={(v) => { if (v !== 'none') setConcessionChargeId(v); }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {openCharges.length === 0 && (
+                          <SelectItem value="none">No open fee charge — held as credit</SelectItem>
+                        )}
+                        {openCharges.map((charge) => (
+                          <SelectItem key={charge.entryId} value={charge.entryId}>
+                            {charge.label} · {formatPKR(charge.unpaid)} unpaid · due {charge.dueDate}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-slate-400 mt-1">
+                      §16 — a concession is its own ledger entry against one fee charge, not a payment that was quietly made smaller.
+                    </p>
+                  </div>
+                  <div>
+                    <Label>Concession Reason *</Label>
+                    <Input
+                      value={concessionReason}
+                      onChange={(e) => setConcessionReason(e.target.value)}
+                      placeholder="Reason for the concession — required"
+                    />
+                    {concessionReason.trim().length < REASON_MIN_LENGTH && (
+                      <p className="text-xs text-red-500 mt-1">
+                        At least {REASON_MIN_LENGTH} characters — a one-word reason defeats the audit trail (§5)
+                      </p>
+                    )}
+                  </div>
+                </>
               )}
 
               <div>
                 <Label>Payment Mode *</Label>
-                <Select value={paymentMode} onValueChange={v => setPaymentMode(v as any)}>
+                <Select value={paymentMode} onValueChange={v => setPaymentMode(v as PaymentMode)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="Cash">Cash</SelectItem>
@@ -367,20 +568,20 @@ export default function RecordPayment() {
                     <span>Payment</span>
                     <span>- {formatPKR(paymentAmount)}</span>
                   </div>
-                  {discountAmount > 0 && (
+                  {concessionAmount > 0 && (
                     <div className="flex justify-between text-teal-600">
-                      <span>Discount</span>
-                      <span>- {formatPKR(discountAmount)}</span>
+                      <span>Concession</span>
+                      <span>- {formatPKR(concessionAmount)}</span>
                     </div>
                   )}
                   <div className="flex justify-between font-bold pt-2 border-t border-slate-100">
-                    <span>New Balance</span>
-                    <span className={newBalance <= 0 ? 'text-green-600' : 'text-amber-600'}>
-                      {formatPKR(newBalance)}
+                    <span>Balance after</span>
+                    <span className={projectedBalance <= 0 ? 'text-green-600' : 'text-amber-600'}>
+                      {formatPKR(projectedBalance)}
                     </span>
                   </div>
                 </div>
-                {newBalance < FEE_RULES.creditGuardThreshold && (
+                {projectedBalance < FEE_RULES.creditGuardThreshold && (
                   <div className="mt-3 p-2 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
                     ⚠ Over-payment guard: balance will go below {formatPKR(Math.abs(FEE_RULES.creditGuardThreshold))} — please confirm.
                   </div>
@@ -393,7 +594,7 @@ export default function RecordPayment() {
                 </Button>
                 <Button
                   onClick={handleSubmit}
-                  disabled={loading || paymentAmount <= 0 || (discountAmount>0 && !discountReason.trim()) || (paymentMode==='Cheque' && !bankRef.trim())}
+                  disabled={loading || paymentAmount <= 0 || (concessionAmount > 0 && concessionReason.trim().length < REASON_MIN_LENGTH) || (paymentMode==='Cheque' && !bankRef.trim())}
                 >
                   {loading ? 'Saving...' : 'Save Payment'}
                 </Button>
@@ -404,18 +605,11 @@ export default function RecordPayment() {
       )}
 
       {/* Step: Success */}
-      {step === 'success' && selectedStudent && (
+      {step === 'success' && selectedStudent && posted && (
         <SuccessReceipt
+          posted={posted}
           student={selectedStudent}
-          paymentAmount={paymentAmount}
-          discountAmount={discountAmount}
-          discountReason={discountReason}
-          receiptNo={receiptNo}
-          paymentMode={paymentMode}
-          bankRef={bankRef}
-          prevBalance={balance}
-          newBalance={newBalance}
-          onAnother={() => { setStep('search'); setSelectedStudent(null); setAmount(''); setDiscount('0'); setDiscountReason(''); setReceiptNo(''); setNarration(''); setPaymentMode('Cash'); setBankRef(''); }}
+          onAnother={() => { setStep('search'); setSelectedStudent(null); setPosted(null); setAmount(''); setConcession('0'); setConcessionReason(''); setConcessionChargeId(''); setReceiptNo(''); setNarration(''); setPaymentMode('Cash'); setBankRef(''); }}
           onDone={() => navigate('/students')}
         />
       )}
@@ -424,19 +618,12 @@ export default function RecordPayment() {
 }
 
 function SuccessReceipt(props: {
+  posted: PostedPayment;
   student: StudentWithBalance;
-  paymentAmount: number;
-  discountAmount: number;
-  discountReason: string;
-  receiptNo: string;
-  paymentMode: string;
-  bankRef: string;
-  prevBalance: number;
-  newBalance: number;
   onAnother: () => void;
   onDone: () => void;
 }) {
-  const { student } = props;
+  const { posted, student } = props;
   const paperDefault = useSettingsStore((s) => s.paperSize);
   const [size, setSize] = useState<ReceiptSize>(paperDefault);
   const institute = {
@@ -444,7 +631,10 @@ function SuccessReceipt(props: {
     address: useSettingsStore((s) => s.instituteAddress),
     phone: useSettingsStore((s) => s.institutePhone),
   };
-  const userName = useAuthStore((s) => s.user?.name) ?? 'Admin';
+  // §18: printed from the entry the ledger kept — its own date, amount and author —
+  // and from the balance re-derived from the stored list, never from the form's maths.
+  const entry = useLedgerStore((s) => s.entries.find((e) => e.id === posted.paymentEntryId));
+  const savedBalance = useLedgerStore((s) => liveBalanceOf(student.sno, s.entries));
   const subLabel = (() => { try { return getSubCourseDef(student.program).sub.label; } catch { return student.program; } })();
   return (
     <div className="space-y-4">
@@ -453,10 +643,13 @@ function SuccessReceipt(props: {
           <div className="text-5xl mb-3">✅</div>
           <h2 className="text-xl font-bold mb-1">Payment Recorded</h2>
           <div className="text-sm text-slate-600">
-            {student.name} (SNO:{student.sno}) · {formatPKR(props.paymentAmount)}
-            {props.discountAmount > 0 && <span> + Disc {formatPKR(props.discountAmount)}</span>}
-            {' '}· Receipt {props.receiptNo || 'N/A'} · Balance {formatPKR(props.newBalance)}
+            {student.name} (SNO:{student.sno}) · {formatPKR(entry?.amount ?? posted.payment)}
+            {posted.concession > 0 && <span> + Concession {formatPKR(posted.concession)}</span>}
+            {' '}· Receipt {posted.receiptNo} · Balance {formatPKR(savedBalance)}
           </div>
+          {entry && (
+            <div className="text-xs text-slate-400 mt-1">Entry #{entry.entryNo} · {entry.date} · posted by {entry.createdBy}</div>
+          )}
           <div className="flex justify-center gap-2 mt-4">
             <Button variant={size === '80mm' ? 'default' : 'outline'} size="sm" onClick={() => setSize('80mm')}>80mm</Button>
             <Button variant={size === 'A4' ? 'default' : 'outline'} size="sm" onClick={() => setSize('A4')}>A4</Button>
@@ -479,16 +672,17 @@ function SuccessReceipt(props: {
           programLabel={subLabel}
           batchLabel={student.batch}
           sessionLabel={String(student.session)}
-          receiptNo={props.receiptNo || 'N/A'}
-          date={new Date().toISOString().split('T')[0]}
-          payment={props.paymentAmount}
-          discount={props.discountAmount}
-          discountReason={props.discountReason}
-          mode={props.paymentMode}
-          bankRef={props.bankRef}
-          prevBalance={props.prevBalance}
-          newBalance={props.newBalance}
-          receivedBy={userName}
+          receiptNo={posted.receiptNo}
+          // The local day the money was taken, not the UTC date the print happened on.
+          date={entry?.date ?? posted.date}
+          payment={entry?.amount ?? posted.payment}
+          discount={posted.concession}
+          discountReason={posted.concessionReason}
+          mode={posted.mode}
+          bankRef={posted.bankRef}
+          prevBalance={posted.prevBalance}
+          newBalance={savedBalance}
+          receivedBy={entry?.createdBy ?? 'Admin'}
         />
       </div>
     </div>

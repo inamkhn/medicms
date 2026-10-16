@@ -11,12 +11,24 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { useSyncStore } from '@/stores/syncStore';
 import { useSettingsStore, useReceiptBookStore, useBudgetStore } from '@/stores';
-import { formatDateTime } from '@/lib/utils';
-import { BANK_INFO, INSTITUTE_INFO, EXPENSE_CATEGORY_OPTIONS } from '@/lib/constants';
+import { formatPKR, formatDateTime } from '@/lib/utils';
+import { DEFAULT_FINANCE_LIMITS, FINANCE_LIMIT_LABELS, FINANCE_LIMIT_UNITS, type FinanceLimitUnit, type FinanceLimits } from '@/lib/finance';
+import { BANK_INFO, INSTITUTE_INFO, EXPENSE_CATEGORY_OPTIONS, PROGRAM_OPTIONS, getCourseOfProgram } from '@/lib/constants';
+import { defaultTermsPerYear } from '@/lib/fee/templateRules';
+import type { ProgramCode } from '@/types';
+
+/** §77: a limit reads as money only for the rupee caps; the rest are plain
+ *  counts, so a back-dating window never shows as ₨7. */
+function financeLimitDefault(unit: FinanceLimitUnit, value: number): string {
+  if (unit === 'PKR') return formatPKR(value);
+  if (unit === 'percent') return `${value}%`;
+  if (unit === 'months') return `${value} months`;
+  return `${value} days`;
+}
 
 export default function Settings() {
   const { status, lastSync, pendingCount, setSyncing, syncComplete } = useSyncStore();
-  const { showTestRecords, setShowTestRecords } = useSettingsStore();
+  const { showTestRecords, setShowTestRecords, financeLimits, setFinanceLimits } = useSettingsStore();
   const { books, addBook } = useReceiptBookStore();
   const { budgets, setBudget } = useBudgetStore();
   const [budgetMonth, setBudgetMonth] = useState(new Date().toISOString().slice(0,7));
@@ -33,6 +45,8 @@ export default function Settings() {
   const setInstitute = useSettingsStore((s) => s.setInstitute);
   const setBank = useSettingsStore((s) => s.setBank);
   const setPaperSize = useSettingsStore((s) => s.setPaperSize);
+  const termsPerYearByProgram = useSettingsStore((s) => s.termsPerYearByProgram);
+  const setTermsPerYear = useSettingsStore((s) => s.setTermsPerYear);
   void INSTITUTE_INFO;
   void BANK_INFO;
   const [serverUrl, setServerUrl] = useState('https://medicms-server.example.com');
@@ -257,11 +271,84 @@ export default function Settings() {
               return (
                 <div key={cat.value} className="flex items-center gap-2">
                   <Label className="w-32 text-xs">{cat.label}</Label>
-                  <Input type="number" placeholder="0" value={String(val)} onChange={e=> setBudget(cat.value as any, budgetMonth, parseInt(e.target.value,10)||0)} className="flex-1 h-8" />
+                  <Input type="number" placeholder="0" value={String(val)} onChange={e=> setBudget(cat.value, budgetMonth, parseInt(e.target.value,10)||0)} className="flex-1 h-8" />
                 </div>
               );
             })}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Finance entry limits (§77) — the caps the money screens check before an amount */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Finance limits</CardTitle>
+          <CardDescription>
+            The values the money screens enforce — rupee caps (payouts, petty vouchers, bill
+            images, cash warnings) and the day, month and percent settings (back-dating, cheque
+            staleness, petty-low and vendor terms). Change a value here; the screens that own
+            each limit read it from here (§77).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            {(Object.keys(DEFAULT_FINANCE_LIMITS) as (keyof FinanceLimits)[]).map((key) => (
+              <div key={key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{FINANCE_LIMIT_LABELS[key]}</div>
+                  <div className="text-xs text-slate-500">default {financeLimitDefault(FINANCE_LIMIT_UNITS[key], DEFAULT_FINANCE_LIMITS[key])}</div>
+                </div>
+                <Input
+                  type="number"
+                  min={0}
+                  className="w-[130px] text-right tabular-nums"
+                  value={String(financeLimits[key])}
+                  onChange={(e) => setFinanceLimits({ [key]: parseInt(e.target.value, 10) || 0 } as Partial<FinanceLimits>)}
+                />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Fee terms per year (§5.4) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Terms Per Year (fees)</CardTitle>
+          <CardDescription>
+            How many terms make one academic year, per program — an "Every new year" fee falls
+            due on the first term of each. Left blank, the program uses the value its course
+            system implies.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            {PROGRAM_OPTIONS.map((p) => {
+              const derived = defaultTermsPerYear(getCourseOfProgram(p.value));
+              const override = termsPerYearByProgram[p.value as ProgramCode];
+              return (
+                <div key={p.value} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{p.label}</div>
+                    <div className="text-xs text-slate-500">{getCourseOfProgram(p.value)} · default {derived}</div>
+                  </div>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={4}
+                    className="w-[90px] text-right tabular-nums"
+                    placeholder={String(derived)}
+                    value={override ?? ''}
+                    onChange={(e) => setTermsPerYear(p.value, parseInt(e.target.value, 10) || null)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs text-slate-400">
+            Applies to templates created or edited afterwards — a template already saved keeps the
+            value it was built with until it is next edited.
+          </p>
         </CardContent>
       </Card>
 

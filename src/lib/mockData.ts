@@ -1,14 +1,18 @@
 // ============================================
-// MediCMS Desktop v4.0 - Mock Data
-// For development only - replace with SQLite data
+// MediCMS Desktop v4.0 - Seed data
+// First-run content for the persisted stores. Once local storage exists it wins,
+// so editing these arrays has no effect on a machine that has already run the app
+// (clear the medicms-* keys to re-seed), until the encrypted database replaces
+// local storage in the storage phase of the design docs.
 // ============================================
 
 import type { 
-  Student, StudentWithBalance, LedgerTransaction, 
-  FeeTemplate, Expense, BankTransaction, AuditLog,
-  SyncStatus, ImportStep
+  Student, 
+  LegacyFeeTemplateRow, Expense, BankTransaction, AuditLog,
+  SyncStatus
 } from '@/types';
-import { getStudentBadge } from './utils';
+import type { LegacyLedgerRow } from '@/lib/ledger';
+import { dayKey } from './dates';
 
 // --- Mock Students ---
 export const MOCK_STUDENTS: Student[] = [
@@ -258,8 +262,11 @@ export const MOCK_STUDENTS: Student[] = [
   },
 ];
 
-// --- Mock Ledger Transactions ---
-export const MOCK_LEDGER: LedgerTransaction[] = [
+// --- Mock Ledger (migration input) ---
+// The old three-column rows (§1). They are no longer the live model: the ledger
+// store converts them into typed entries once, on first run
+// (lib/ledger/migrate.ts, §7.10) — a negative discount becomes a special charge.
+export const MOCK_LEDGER: LegacyLedgerRow[] = [
   // SNO 76 - Sana Ali (has dues)
   {
     id: 'tx-76-1',
@@ -333,10 +340,54 @@ export const MOCK_LEDGER: LedgerTransaction[] = [
     createdBy: 'Admin Khalid',
     synced: true,
   },
+  // Seeded on the LOCAL current day so the dashboard's Today panel, the Cash /
+  // Bank split (§14) and the receipt list are demonstrable out of the box. The
+  // date is computed at module load via dayKey(), never from a UTC ISO split (§15).
+  {
+    id: 'tx-76-today-1',
+    studentSno: 76,
+    txnNo: 5,
+    date: dayKey(),
+    type: 'Pay',
+    semester: '3rd',
+    session: 2018,
+    fees: 0,
+    discount: 0,
+    payment: 12000,
+    receiptNo: '#854',
+    receivedBy: 'Admin Khalid',
+    paymentMode: 'Cash',
+    narration: 'Counter collection',
+    createdAt: new Date().toISOString(),
+    createdBy: 'Admin Khalid',
+    synced: false,
+  },
+  {
+    id: 'tx-76-today-2',
+    studentSno: 76,
+    txnNo: 6,
+    date: dayKey(),
+    type: 'Pay',
+    semester: '3rd',
+    session: 2018,
+    fees: 0,
+    discount: 0,
+    payment: 8500,
+    receiptNo: '#855',
+    receivedBy: 'Admin Khalid',
+    paymentMode: 'Bank',
+    narration: 'Bank transfer — fee instalment',
+    createdAt: new Date().toISOString(),
+    createdBy: 'Admin Khalid',
+    synced: false,
+  },
 ];
 
-// --- Mock Fee Templates ---
-export const MOCK_FEE_TEMPLATES: FeeTemplate[] = [
+// --- Legacy fee rows (migration input) ---
+// The old per-semester, eight-head table. It is no longer the live model: the fee
+// template store converts these rows into component-based templates once, on first
+// run (see lib/fee/templateSeed). Kept only as that seed input.
+export const MOCK_FEE_TEMPLATES: LegacyFeeTemplateRow[] = [
   {
     id: 'tpl-health-1-2017',
     program: 'Health',
@@ -546,16 +597,6 @@ export const MOCK_SYNC_STATUS: SyncStatus = {
   pendingCount: 0,
 };
 
-// --- Mock Import Steps ---
-export const MOCK_IMPORT_STEPS: ImportStep[] = [
-  { id: 'students', name: 'Import Students', status: 'completed', recordsCount: 100 },
-  { id: 'templates', name: 'Import Fee Templates', status: 'completed', recordsCount: 48 },
-  { id: 'ledger', name: 'Map Ledger → Students', status: 'warning', recordsCount: 87, warnings: ['11 unmatched student IDs'] },
-  { id: 'bank', name: 'Import Bank Ledger', status: 'completed', recordsCount: 24 },
-  { id: 'expenses', name: 'Import Expenses', status: 'completed', recordsCount: 5 },
-  { id: 'verify', name: 'Verify & Confirm', status: 'pending' },
-];
-
 // --- Mock Dashboard Stats ---
 export const MOCK_DASHBOARD = {
   activeStudents: 484,
@@ -575,35 +616,3 @@ export const MOCK_DASHBOARD = {
     { sno: 97, name: 'M. Jamil', program: 'Surgical', dues: 16000 },
   ],
 };
-
-// --- Student balances (computed from the ledger in the real app) ---
-export const MOCK_BALANCES: Record<number, number> = {
-  41: 0,
-  42: 5000,
-  57: 0,
-  63: 0,
-  76: 23100,
-  87: 27000,
-  99: 11500,
-  114: -20000,  // Credit
-  139: -12500,  // Credit
-  146: 0,
-};
-
-export function getStudentBalance(sno: number): number {
-  return MOCK_BALANCES[sno] ?? 0;
-}
-
-// --- Helper: Get students with computed balance ---
-// @deprecated — static MOCK_BALANCES source. Use getStudentsWithBalanceLive(students, transactions)
-// from '@/lib/balance' (live ledger, single source of truth) instead.
-export function getStudentsWithBalance(students: Student[] = MOCK_STUDENTS): StudentWithBalance[] {
-  return students.map(student => {
-    const balance = getStudentBalance(student.sno);
-    return {
-      ...student,
-      computedBalance: balance,
-      badge: getStudentBadge(student.struckOff, balance),
-    };
-  });
-}

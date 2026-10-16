@@ -3,14 +3,86 @@
 // Based on Desktop_Module_Architecture_v4
 // ============================================
 
-// --- User & Auth (admin-only) ---
-export type UserRole = 'Admin';
+// The fee engine owns the component shape; the stored template references it instead
+// of keeping a second copy that could drift (FEE_TEMPLATES_AND_ADMISSION_DESIGN §5.2).
+import type { FeeComponent } from '@/lib/fee/types';
 
+export type { FeeComponent, ChargeTiming } from '@/lib/fee/types';
+
+// The ledger owns its own entry model (PAYMENTS_RECEIPTS_LEDGER_DESIGN §5, §6); the
+// app references it rather than keeping a second copy that could drift.
+export type {
+  LedgerEntry,
+  LedgerEntryLine,
+  LedgerEntryType,
+  PaymentMode,
+} from '@/lib/ledger/types';
+
+// The academic core owns the courses/programs/sessions/batches model
+// (BATCHES_ACADEMIC_SETUP_DESIGN §5, §16-§18); the app references it rather than
+// keeping a second copy. The legacy `Batch` below is superseded in Phase 2.
+export type {
+  AcademicCourse,
+  AcademicProgram,
+  AcademicSession,
+  AcademicBatch,
+  TermRow,
+  TermPosition,
+  TermSystem,
+  BatchStatus,
+  AdmissionsState,
+  SessionState,
+  CalendarTerm,
+} from '@/lib/academic/types';
+
+// --- User & Auth ---
+// Design doc Feature 1 §3: four roles replace the single hardcoded Admin.
+export type UserRole = 'Admin' | 'Accountant' | 'Counter' | 'Viewer';
+
+export const ROLE_LABELS: Record<UserRole, string> = {
+  Admin: 'Admin',
+  Accountant: 'Accountant',
+  Counter: 'Counter operator',
+  Viewer: 'Viewer',
+};
+
+/**
+ * The session shape the rest of the UI reads (Header/Sidebar name, `receivedBy`,
+ * audit `user`). Deliberately free of any secret — the credential record is AppUser.
+ * Keeping this identical to the old `User` means existing `user.name / user.role`
+ * call sites are untouched by the multi-user redesign.
+ */
 export interface User {
+  id: string;
+  username: string;
+  name: string;      // full name
+  role: UserRole;
+}
+
+/**
+ * A stored account. `passwordHash` is the only credential material kept; the
+ * plaintext never lands in storage (Feature 1 §6). Lock counters live here so a
+ * locked account survives a reload (§10). Users are disabled, never deleted, so
+ * old audit entries still resolve to a real name (§7).
+ */
+export interface AppUser {
   id: string;
   username: string;
   name: string;
   role: UserRole;
+  status: 'Active' | 'Disabled';
+  passwordHash: string;
+  passwordSalt: string;
+  /** true after an admin reset until the user picks their own password (§7). */
+  mustChangePassword: boolean;
+  /** Optional receipt book for counter operators who issue receipts (§7). */
+  receiptBookId: string | null;
+  createdAt: string;
+  lastLoginAt: string | null;
+  /** Consecutive failed sign-ins since the last success (§6). */
+  failedAttempts: number;
+  /** ISO timestamp; the account is locked for sign-in until this moment (§6). */
+  lockedUntil: string | null;
 }
 
 // --- Programs & Courses ---
@@ -64,14 +136,13 @@ export interface Student {
   batch: string;
   session: number;                // Year e.g. 2017
   semester: Semester;             // Current semester (derived from ledger)
-  // Locked fee at admission: full Sem-1 total + recurring promotion default
+  // Locked fee at admission: full Sem-1 total + recurring promotion default.
+  // Superseded by the component plan + concession records (design doc §13.2/§15.2),
+  // which is slice 3; for now these are derived from the v2 template so a student's
+  // locked figures and the template can never disagree (§7.4 - the plan is a copy).
   baseFeeTotal?: number;
   baseFeeRecurring?: number;
-  baseFeeBreakup?: {
-    admissionFee: number; tuitionFee: number; idCardFee: number;
-    annualCharges: number; securityFee: number; enrollmentFee: number;
-    diplomaFee: number; clinicalCharges: number;
-  };
+  baseFeeBreakup?: LegacyFeeHeads;
   photoUrl?: string | null;        // Base64 data URL or remote URL (for ID Card)
   dob?: string | null;               // ISO date (YYYY-MM-DD)
   gender?: 'Male' | 'Female' | 'Other' | null;
@@ -84,71 +155,77 @@ export interface Student {
   synced: boolean;
 }
 
-// --- Fee Template ---
-export interface FeeTemplate {
+// --- Fee Template (v2, design doc §5) ---
+export type TemplateStatus = 'Draft' | 'Active' | 'Archived';
+
+/**
+ * The eight heads the pre-v2 screens and stored student breakups are written in.
+ * `otherFees` carries components that are not one of the legacy eight, so a
+ * hand-built template with a "Lab fee" cannot quietly lose that money.
+ */
+export interface LegacyFeeHeads {
+  admissionFee: number;
+  tuitionFee: number;
+  idCardFee: number;
+  annualCharges: number;
+  securityFee: number;
+  enrollmentFee: number;
+  diplomaFee: number;
+  clinicalCharges: number;
+  otherFees: number;
+}
+
+/**
+ * One row of the old per-semester, eight-head table. Migration input only — it
+ * genuinely has no `otherFees` column, which is why it does not extend the full
+ * nine-head record.
+ */
+export interface LegacyFeeTemplateRow extends Omit<LegacyFeeHeads, 'otherFees'> {
   id: string;
-  course: CourseCode;             // Parent course
-  program: ProgramCode;           // Sub-course
+  course: CourseCode;
+  program: ProgramCode;
   semester: Semester;
   batch: string;
   session: number;
-  admissionFee: number;
-  tuitionFee: number;             // Stored as tuition_fee (corrected from Tution_Fee)
-  idCardFee: number;
-  annualCharges: number;          // Applies Sem 3+ only
-  securityFee: number;            // Never used (always 0)
-  enrollmentFee: number;
-  diplomaFee: number;             // Applies Sem 4 only
-  clinicalCharges: number;        // Applies Sem 3 only
 }
 
-// --- Ledger Transaction ---
-export type TransactionType = 
-  | 'Demand'   // Fee demand
-  | 'Pay'      // Payment received
-  | 'Disc'     // Discount/waiver
-  | 'Exam'     // Exam fee
-  | 'CT'       // Clinical Training
-  | 'Annual'   // Annual charges
-  | 'Fine'     // Fines (late, library, equipment, other)
-  | 'Adj'      // Ledger adjustment (corrections/waivers only)
-  | 'Refund';  // Refund to student
-
-export interface LedgerTransaction {
+/**
+ * One template covers the whole program (§5.1): the fee for each term is computed
+ * from `components` by the engine rather than stored per semester. `batch` is ''
+ * for an all-batches template, which is used only when no batch-specific one
+ * exists (§7.3).
+ */
+export interface FeeTemplate {
   id: string;
-  studentSno: number;             // FK to students.sno (NOT position ID)
-  txnNo: number;                  // Sequential within student
-  date: string;                   // ISO date
-  type: TransactionType;
-  semester?: Semester;
-  session?: number;
-  
-  // Amount columns
-  fees: number;                   // Fee demand amount
-  discount: number;               // Discount amount (positive reduces balance)
-  payment: number;                // Payment received
-  
-  // Receipt info
-  receiptNo: string | null;       // Dedicated field, not in narration
-  receivedBy: string | null;      // Auto-filled from logged-in user
-  
-  narration: string;
-  
-  // Audit
+  name: string;
+  course: CourseCode;
+  program: ProgramCode;
+  session: number;
+  batch: string;
+  status: TemplateStatus;
+  /** Raised on every save of an Active template (§7.9); a plan records it (§15.2). */
+  version: number;
+  notes?: string;
+  /** From the program's term list in constants (§5.1). */
+  totalTerms: number;
+  /** From Settings, defaulting to the course system (§5.4). Must be > 0 to activate (§7.10). */
+  termsPerYear: number;
+  /** Due-date defaults, §5.1 and §31 #6: 14 days after admission, 15 after posting. */
+  admissionDueDays: number;
+  termDueDays: number;
+  components: FeeComponent[];
   createdAt: string;
-  createdBy: string;
-  synced: boolean;
+  updatedAt: string;
 }
 
-// --- Computed Balance (never stored) ---
-export interface ComputedBalance {
-  sno: number;
-  totalDemanded: number;
-  totalDiscount: number;
-  totalPaid: number;
-  totalCharges: number;           // Exam fees, CT, etc.
-  balance: number;                // fees - discount - payment + charges
-}
+// --- Payment mode ---
+// Declared in lib/ledger/types.ts with the entry that carries it, and re-exported
+// above: where the money physically came from is a property of a ledger entry
+// (§14, §32), not a separate concept the app keeps its own copy of.
+
+// The old three-column LedgerTransaction / TransactionType row is gone (§1). Its
+// shape lives only as LegacyLedgerRow / LegacyTransactionType in lib/ledger/migrate.ts,
+// which is the migration input; nothing new is posted as one.
 
 // --- Balance Display State ---
 export type BalanceState = 
@@ -217,11 +294,26 @@ export interface BankTransaction {
 }
 
 // --- Audit Log ---
+/** One before/after pair. Named here because ConfirmWithReasonDialog emits this
+ *  same shape, so a recorded edit and the dialog that produced it cannot drift. */
+export interface AuditChange {
+  field: string;
+  before: string;
+  after: string;
+}
+
 export type AuditAction = 
   | 'Payment' | 'Fee Demand' | 'Charge Added' | 'Ledger Adjustment'
   | 'New Admission' | 'Student Edit' | 'Struck Off' | 'Struck Off Reversed'
   | 'Bank Entry' | 'Expense Added' | 'Fee Template Change'
-  | 'Sync Event' | 'Login' | 'Data Import';
+  | 'Sync Event' | 'Login' | 'Data Import'
+  // Academic setup — BATCHES_ACADEMIC_SETUP_DESIGN §7/§12: every program/session/batch change is audited
+  | 'Academic Setup'
+  // Finance core — FINANCE_CORE_DESIGN §3: accounts, transfers, deposits, day closes
+  | 'Finance Entry'
+  // Access events — Feature 1 §8
+  | 'Failed Sign In' | 'Sign Out' | 'Auto-Lock' | 'Unlock'
+  | 'Password Change' | 'Password Reset' | 'User Created' | 'User Disabled' | 'Role Changed';
 
 export interface AuditLog {
   id: string;
@@ -230,7 +322,7 @@ export interface AuditLog {
   action: AuditAction;
   studentSno?: number;
   details: string;
-  changes?: { field: string; before: string; after: string }[];
+  changes?: AuditChange[];
   synced: boolean;
 }
 
@@ -242,15 +334,6 @@ export interface SyncStatus {
   lastSync: string | null;
   pendingCount: number;
   error?: string;
-}
-
-// --- Import Wizard State ---
-export interface ImportStep {
-  id: string;
-  name: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'warning' | 'error';
-  recordsCount?: number;
-  warnings?: string[];
 }
 
 // --- Student Status Badge ---

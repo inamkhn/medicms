@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getSubCourseDef } from '@/lib/constants';
+import { getSubCourseDef, SEMESTER_OPTIONS } from '@/lib/constants';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
 import { getTermLabel, formatCNIC, normalizeCNIC, isValidCNIC, isValidContact, normalizeContact } from '@/lib/utils';
 import { useStudentStore, useLedgerStore, useAuditStore, useAuthStore } from '@/stores';
@@ -28,8 +28,8 @@ export default function EditStudent() {
 
   const students = useStudentStore((s) => s.students);
   const updateStudent = useStudentStore((s) => s.updateStudent);
-  const ledgerTxns = useLedgerStore((s) => s.transactions);
-  const allStudents = getStudentsWithBalanceLive(students, ledgerTxns);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
+  const allStudents = getStudentsWithBalanceLive(students, ledgerEntries);
   const student = allStudents.find(s => s.sno.toString() === sno);
 
   const [formData, setFormData] = useState({
@@ -59,14 +59,13 @@ export default function EditStudent() {
   const subDef = getSubCourseDef(student.program);
   const termNoun = subDef.course.system === 'annual' ? 'Year' : subDef.course.system === 'months' ? 'Term' : 'Semester';
 
-  // Derived semester: max Demand semester in the ledger for this student (live store)
-  const ledgerTx = useLedgerStore((s) => s.transactions);
-  const demandSemesters = ledgerTx
-    .filter(t => t.studentSno === student.sno && t.type === 'Demand' && t.semester)
-    .map(t => t.semester as Semester);
-  const derivedSemester: Semester = demandSemesters.length > 0
-    ? demandSemesters.reduce((max, s) => (parseInt(s, 10) > parseInt(max, 10) ? s : max))
-    : student.semester;
+  // Derived semester: the highest term carrying a fee charge in this student's ledger
+  // (§5 — an entry holds a term number, so the recommendation reads the entries).
+  const chargedTerms = ledgerEntries
+    .filter((entry) => entry.studentSno === student.sno && entry.type === 'FeeCharge' && entry.term)
+    .map((entry) => entry.term as number);
+  const highestChargedTerm = chargedTerms.reduce((max, term) => (term > max ? term : max), 0);
+  const derivedSemester: Semester = SEMESTER_OPTIONS[highestChargedTerm - 1] ?? student.semester;
 
   // Dirty detection: compare the form against the stored student
   const isDirty =
@@ -141,7 +140,7 @@ export default function EditStudent() {
       changes,
     });
     setSaved(true);
-    setTimeout(() => navigate(-1), 1500);
+    setTimeout(() => navigate(`/students/${student.sno}`), 1500);
   };
 
   const handleCancel = () => {
@@ -149,8 +148,16 @@ export default function EditStudent() {
     navigate(-1);
   };
 
+  const hasFeeCharge = ledgerEntries.some((entry) => entry.studentSno === student.sno && entry.type === 'FeeCharge');
+
   return (
     <div className="w-auto space-y-8">
+      <div className="text-[12px] text-slate-500">
+        <button className="hover:underline" onClick={() => navigate('/students')}>Students</button>
+        <span> / </span>
+        <button className="hover:underline" onClick={() => navigate(`/students/${student.sno}`)}>{student.name}</button>
+        <span> / Edit</span>
+      </div>
       {/* Header */}
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="icon" onClick={handleCancel}>
@@ -171,7 +178,7 @@ export default function EditStudent() {
 
       {saved && (
         <div className="bg-emerald-50/80 border border-emerald-100 rounded-xl p-4 text-sm text-emerald-600">
-          Changes saved successfully. Redirecting...
+          Student updated — returning to profile…
         </div>
       )}
 
@@ -290,7 +297,9 @@ export default function EditStudent() {
             Locked Fields
           </CardTitle>
           <CardDescription>
-            Set at admission — contact admin if wrong. To change program, use Student Transfer.
+            {hasFeeCharge
+              ? 'Locked — a fee charge exists for this student. Changing program would break the locked fee; use Student Transfer instead.'
+              : 'Set at admission — contact admin if wrong. To change program, use Student Transfer.'}
           </CardDescription>
         </CardHeader>
         <CardContent>

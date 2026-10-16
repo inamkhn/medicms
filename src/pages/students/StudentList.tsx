@@ -2,49 +2,36 @@
 // MediCMS Desktop v4.0 - Student List
 // ============================================
 
-import { useState, useRef, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { StudentStatusBadge } from '@/components/students/StudentStatusBadge';
+import { SnoDisplay } from '@/components/students/SnoDisplay';
 import {
   Plus, Search, Download, Printer, Eye, BookOpen, CreditCard, Pencil,
-  ArrowUp, ArrowDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
-  SlidersHorizontal, ChevronDown, ChevronUp, SearchX, FilterX, User, Upload, UserX, X,
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  SlidersHorizontal, ChevronDown, ChevronUp, SearchX, FilterX, User, Upload, UserX, X, RotateCcw,
+  Columns3, Bookmark, Save, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableSortHead,
 } from '@/components/ui/table';
-import { useAuthStore, useStudentStore, useSettingsStore, useAuditStore, useLedgerStore } from '@/stores';
+import { useAuthStore, useStudentStore, useSettingsStore, useAuditStore, useLedgerStore, useDirectoryStore, useAcademicStore, can } from '@/stores';
 import { canWrite } from '@/stores/authStore';
-import { normalizeCNIC, normalizeContact } from '@/lib/utils';
+import { AcademicSelector, type AcademicSelection } from '@/components/academic/AcademicSelector';
 
 import { getStudentsWithBalanceLive } from '@/lib/balance';
 import {
-  COURSES, SESSION_OPTIONS, SEMESTER_OPTIONS,
-  getCourseDef, getSubCourseDef,
+  SEMESTER_OPTIONS,
+  getSubCourseDef,
 } from '@/lib/constants';
-import { useBatchStore } from '@/stores/batchStore';
-import { cn, formatBalanceDisplay, formatDate, getTermLabel, pluralize } from '@/lib/utils';
-import type { StudentBadgeType, CourseCode, ProgramCode, Semester } from '@/types';
-
-// --- Status badge ---
-function StatusBadge({ badge, balance }: { badge: StudentBadgeType; balance: number }) {
-  const config: Record<StudentBadgeType, { label: string; className: string }> = {
-    active: { label: 'Active', className: 'bg-emerald-50 text-emerald-600 border border-emerald-100' },
-    dues: { label: `PKR ${balance.toLocaleString()} due`, className: 'bg-amber-50 text-amber-600 border border-amber-100' },
-    credit: { label: `Credit PKR ${Math.abs(balance).toLocaleString()}`, className: 'bg-blue-50 text-blue-600 border border-blue-100' },
-    struck_off: { label: 'Struck Off', className: 'bg-red-50 text-red-600 border border-red-100' },
-    struck_off_dues: { label: `Struck Off + PKR ${balance.toLocaleString()}`, className: 'bg-red-50 text-red-600 border border-red-100' },
-    struck_off_credit: { label: 'Struck Off + Credit', className: 'bg-red-50 text-red-600 border border-red-100' },
-  };
-
-  const { label, className } = config[badge];
-  return <Badge className={className}>{label}</Badge>;
-}
+import { cn, formatBalanceDisplay, formatDate, formatPKR, getTermLabel, pluralize } from '@/lib/utils';
+import { dayKey } from '@/lib/dates';
+import type { ProgramCode, Semester } from '@/types';
 
 // --- Sub-course info cache (getSubCourseDef resolved once per program code) ---
 interface SubCourseInfo {
@@ -87,36 +74,11 @@ function BalanceCell({ balance }: { balance: number }) {
 }
 
 // --- Sorting ---
-type SortKey = 'sno' | 'name' | 'program' | 'batch' | 'session' | 'semester' | 'regDate' | 'balance';
+type SortKey = 'sno' | 'name' | 'program' | 'batch' | 'session' | 'semester' | 'regDate' | 'balance' | 'lastPay';
 type SortDir = 'asc' | 'desc';
 
-function SortableHead({
-  label, sortKey, activeKey, dir, onSort, className,
-}: {
-  label: string;
-  sortKey: SortKey;
-  activeKey: SortKey;
-  dir: SortDir;
-  onSort: (key: SortKey) => void;
-  className?: string;
-}) {
-  const active = activeKey === sortKey;
-  return (
-    <TableHead className={className}>
-      <button
-        type="button"
-        onClick={() => onSort(sortKey)}
-        className={cn(
-          'inline-flex items-center gap-1.5 transition-colors cursor-pointer',
-          active ? 'text-slate-900 font-semibold' : 'hover:text-slate-900'
-        )}
-      >
-        {label}
-        {active && (dir === 'asc' ? <ArrowUp size={13} /> : <ArrowDown size={13} />)}
-      </button>
-    </TableHead>
-  );
-}
+// The sortable header itself now lives in components/ui/table (TableSortHead) —
+// directory, ledger, audit, expenses and bank all need the same affordance.
 
 // --- Row action icon button ---
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
@@ -153,6 +115,15 @@ function PageButton({ disabled, onClick, title, children }: {
 }
 
 // --- Page number list with ellipsis ---
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between px-3 py-2 text-body">
+      <span className="text-ink-muted">{label}</span>
+      <span className="font-semibold text-ink tabular-nums">{value}</span>
+    </div>
+  );
+}
+
 function getPageNumbers(current: number, total: number): (number | '…')[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
   const pages: (number | '…')[] = [1];
@@ -166,69 +137,241 @@ function getPageNumbers(current: number, total: number): (number | '…')[] {
 // --- Status filter values ---
 type StatusFilter = 'all' | 'active' | 'dues' | 'credit' | 'struck_off';
 
+// §22.5 toggleable columns (Photo/SNO/Name/Actions are always shown and not listed).
+const COLUMNS: { id: string; label: string }[] = [
+  { id: 'photo', label: 'Photo' },
+  { id: 'program', label: 'Program' },
+  { id: 'batch', label: 'Batch' },
+  { id: 'session', label: 'Session' },
+  { id: 'term', label: 'Current term' },
+  { id: 'contact', label: 'Phone' },
+  { id: 'regDate', label: 'Reg date' },
+  { id: 'lastPay', label: 'Last payment' },
+  { id: 'balance', label: 'Balance' },
+  { id: 'status', label: 'Status' },
+];
+
 export default function StudentList() {
   const navigate = useNavigate();
+  // §16 Dashboard click-through: a card deep-links a pre-filtered view via the
+  // address, e.g. /students?status=dues&sort=balance. Seed the local filter state
+  // from the query once; the page stays the source of truth after that.
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuthStore();
-  const canEdit = canWrite(user?.role);
+  const role = user?.role;
+  const userName = user?.name ?? '';
+  const canEdit = canWrite(role);
+  // §28 gates read the one shared rule set, never ad-hoc role names.
+  const canImport = can(role, 'data.import');
+  const canBulkStrike = can(role, 'student.bulkStrike');
+  // §28: a counter operator may export, but the file must not carry balances.
+  const seesBalances = role !== 'Counter';
   const storeStudents = useStudentStore((s) => s.students);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
-  const ledgerTxns = useLedgerStore((s) => s.transactions);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
+  // Saved views + column chooser are per-user and persisted (§22.4 / §22.5).
+  // Select the raw slices (stable refs) and derive below — a selector that returns
+  // a fresh array each call would spin zustand v5 into an infinite loop.
+  const allViews = useDirectoryStore((s) => s.views);
+  const hiddenColumnsMap = useDirectoryStore((s) => s.hiddenColumns);
+  const addView = useDirectoryStore((s) => s.addView);
+  const removeView = useDirectoryStore((s) => s.removeView);
+  const setHiddenColumns = useDirectoryStore((s) => s.setHiddenColumns);
+  const myViews = useMemo(() => allViews.filter((v) => v.owner === userName), [allViews, userName]);
+  const hiddenColumns = hiddenColumnsMap[userName] ?? [];
 
-  const [search, setSearch] = useState('');
-  const [courseFilter, setCourseFilter] = useState('all');
-  const [programFilter, setProgramFilter] = useState('all');
-  const [batchFilter, setBatchFilter] = useState('all');
-  const [sessionFilter, setSessionFilter] = useState('all');
-  const [semesterFilter, setSemesterFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // §22.3 — every filter, the sort and the page live in the page address so a view
+  // can be bookmarked, shared or deep-linked from the dashboard. Local state is the
+  // source of truth after mount; one effect mirrors it back to the address.
+  const str = (k: string) => searchParams.get(k) ?? 'all';
+  const num = (k: string) => { const n = parseInt(searchParams.get(k) ?? '', 10); return Number.isFinite(n) ? n : 1; };
+  const oneOf = <T extends string>(k: string, allowed: readonly T[], def: T): T => {
+    const v = searchParams.get(k);
+    return v && (allowed as readonly string[]).includes(v) ? (v as T) : def;
+  };
+  const STATUS_VALUES = ['all', 'active', 'dues', 'credit', 'struck_off'] as const;
+  const SORT_KEYS = ['sno', 'name', 'balance', 'lastPay'] as const;
+
+  const [searchInput, setSearchInput] = useState(searchParams.get('q') ?? '');
+  const [search, setSearch] = useState(searchParams.get('q') ?? '');
+  const [courseFilter, setCourseFilter] = useState(str('course'));
+  const [programFilter, setProgramFilter] = useState(str('program'));
+  const [batchFilter, setBatchFilter] = useState(str('batch'));
+  const [sessionFilter, setSessionFilter] = useState(str('session'));
+  const [semesterFilter, setSemesterFilter] = useState(str('term'));
+  // §38.3 The directory's batch list hides Completed batches unless this is ticked.
+  const [includeCompleted, setIncludeCompleted] = useState(searchParams.get('completed') === '1');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(oneOf('status', STATUS_VALUES, 'all'));
+  const [sortKey, setSortKey] = useState<SortKey>(oneOf('sort', SORT_KEYS, 'sno'));
+  const [sortDir, setSortDir] = useState<SortDir>(searchParams.get('dir') === 'desc' ? 'desc' : 'asc');
+  const [balMin, setBalMin] = useState(searchParams.get('balmin') ?? '');
+  const [balMax, setBalMax] = useState(searchParams.get('balmax') ?? '');
+  const [regFrom, setRegFrom] = useState(searchParams.get('from') ?? '');
+  const [regTo, setRegTo] = useState(searchParams.get('to') ?? '');
+  const [noCharge, setNoCharge] = useState<'all' | 'yes' | 'no'>(oneOf('nocharge', ['all', 'yes', 'no'] as const, 'all'));
   const [filtersOpen, setFiltersOpen] = useState(true);
-  const [sortKey, setSortKey] = useState<SortKey>('sno');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [page, setPage] = useState(num('page'));
+  const [pageSize, setPageSize] = useState(() => { const s = parseInt(searchParams.get('size') ?? '20', 10); return [20, 50, 100].includes(s) ? s : 20; });
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selectAllFiltered, setSelectAllFiltered] = useState(false);
   const [showBulkStrike, setShowBulkStrike] = useState(false);
   const [bulkReason, setBulkReason] = useState('');
-  const [importOpen, setImportOpen] = useState(false);
-  const [importRows, setImportRows] = useState<{ raw: string[]; error?: string }[]>([]);
-  const [importHeader, setImportHeader] = useState<string[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // §26.4 the batch just struck off, kept so the result screen can undo (reinstate all).
+  const [bulkResult, setBulkResult] = useState<{ snos: number[]; reason: string } | null>(null);
+  const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [viewsOpen, setViewsOpen] = useState(false);
+  const [newViewName, setNewViewName] = useState('');
 
-  const allStudents = getStudentsWithBalanceLive(storeStudents, ledgerTxns).filter((s) => showTestRecords || !s.isTestRecord);
+  // Debounce the search box into the applied filter; reset to page 1. Declared after
+  // `setPage` so the effect does not reference state before it is initialised.
+  useEffect(() => {
+    const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 150);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
-  const filterProgramOptions = courseFilter === 'all'
-    ? COURSES.flatMap((c) => c.subCourses)
-    : getCourseDef(courseFilter as CourseCode).subCourses;
-  const allBatches = useBatchStore((s) => s.batches);
-  const filterBatchOptions =
-    programFilter !== 'all'
-      ? allBatches.filter((b) => b.program === programFilter)
-      : courseFilter !== 'all'
-        ? allBatches.filter((b) => b.course === courseFilter)
-        : allBatches;
+  const allStudents = getStudentsWithBalanceLive(storeStudents, ledgerEntries).filter((s) => showTestRecords || !s.isTestRecord);
+
+  // §22.5 Last payment date = latest Payment entry per student, derived once from the
+  // ledger and reused by the column, the sort and the CSV export.
+  const lastPayBySno = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const entry of ledgerEntries) {
+      if (entry.type !== 'Payment') continue;
+      const prev = m.get(entry.studentSno);
+      if (!prev || entry.date > prev) m.set(entry.studentSno, entry.date);
+    }
+    return m;
+  }, [ledgerEntries]);
+
+  // §22.3 "No fee charge for current term": a student is charged this term when a
+  // FeeCharge entry carries the term they are standing in (§5 — an entry has a term,
+  // not a semester label).
+  const chargedCurrent = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of ledgerEntries) {
+      if (entry.type !== 'FeeCharge' || entry.term === null || entry.term === undefined) continue;
+      const semester = SEMESTER_OPTIONS[entry.term - 1];
+      // A term outside the program's list cannot be the student's current one, so it
+      // is skipped rather than turned into a key nobody matches.
+      if (!semester) continue;
+      set.add(`${entry.studentSno}|${semester}`);
+    }
+    return set;
+  }, [ledgerEntries]);
+
+  // §38/§46 The academic filters are the shared AcademicSelector, and this page keeps
+  // its own state in legacy terms (students are stored by program code, session and
+  // batch name; saved views and dashboard links carry those in the address). So the
+  // selection is derived from the address state and mapped back on every change.
+  const academicCourses = useAcademicStore((s) => s.courses);
+  const academicPrograms = useAcademicStore((s) => s.programs);
+  const academicBatches = useAcademicStore((s) => s.batches);
+  const selection = useMemo<AcademicSelection>(() => {
+    const program = programFilter === 'all' ? undefined : academicPrograms.find((p) => p.legacyValue === programFilter);
+    const course = courseFilter === 'all' ? undefined : academicCourses.find((c) => c.legacyValue === courseFilter);
+    // Resolvable only when the cascade (program + session) the batch dropdown needs
+    // is present — otherwise the id would name an option the list cannot show.
+    const batch = program && batchFilter !== 'all' && sessionFilter !== 'all'
+      ? academicBatches.find((b) => b.programId === program.id
+          && b.session === Number(sessionFilter)
+          && b.name.trim().toLowerCase() === batchFilter.trim().toLowerCase())
+      : undefined;
+    return {
+      courseId: course?.id ?? program?.courseId ?? '',
+      programId: program?.id ?? '',
+      session: sessionFilter === 'all' ? '' : Number(sessionFilter),
+      // A Completed batch reached by an old link stays shown even while the offers
+      // hide it — the component renders the chosen-but-unlisted batch itself.
+      batchId: batch?.id ?? '',
+    };
+  }, [academicCourses, academicPrograms, academicBatches, courseFilter, programFilter, sessionFilter, batchFilter]);
+
+  const applySelection = (next: AcademicSelection) => {
+    const program = next.programId ? academicPrograms.find((p) => p.id === next.programId) : undefined;
+    const course = next.courseId ? academicCourses.find((c) => c.id === next.courseId) : undefined;
+    const batch = next.batchId ? academicBatches.find((b) => b.id === next.batchId) : undefined;
+    setCourseFilter(course?.legacyValue ?? 'all');
+    setProgramFilter(program?.legacyValue ?? 'all');
+    // A chosen batch pins its own session — the pair must stay coherent.
+    setSessionFilter(batch ? String(batch.session) : next.session === '' ? 'all' : String(next.session));
+    setBatchFilter(batch?.name ?? 'all');
+    setPage(1);
+    resetSelection();
+  };
+
+  // §22.3 mirror every filter to the page address; defaults are omitted so links stay
+  // short and a copied link reopens exactly the same view (§30).
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (search) p.set('q', search);
+    if (courseFilter !== 'all') p.set('course', courseFilter);
+    if (programFilter !== 'all') p.set('program', programFilter);
+    if (batchFilter !== 'all') p.set('batch', batchFilter);
+    if (sessionFilter !== 'all') p.set('session', sessionFilter);
+    if (semesterFilter !== 'all') p.set('term', semesterFilter);
+    if (includeCompleted) p.set('completed', '1');
+    if (statusFilter !== 'all') p.set('status', statusFilter);
+    if (sortKey !== 'sno') p.set('sort', sortKey);
+    if (sortDir !== 'asc') p.set('dir', sortDir);
+    if (balMin) p.set('balmin', balMin);
+    if (balMax) p.set('balmax', balMax);
+    if (regFrom) p.set('from', regFrom);
+    if (regTo) p.set('to', regTo);
+    if (noCharge !== 'all') p.set('nocharge', noCharge);
+    if (page > 1) p.set('page', String(page));
+    if (pageSize !== 20) p.set('size', String(pageSize));
+    setSearchParams(p, { replace: true });
+  }, [search, courseFilter, programFilter, batchFilter, sessionFilter, semesterFilter, includeCompleted, statusFilter, sortKey, sortDir, balMin, balMax, regFrom, regTo, noCharge, page, pageSize, setSearchParams]);
+
+  // Changing any filter invalidates a bulk selection so it can never act on rows the
+  // user can no longer see.
+  const resetSelection = () => { setSelected(new Set()); setSelectAllFiltered(false); };
 
   // Filter handlers also reset the page (fixes the empty-page bug)
-  const updateSearch = (v: string) => { setSearch(v); setPage(1); };
-  const updateCourse = (v: string) => { setCourseFilter(v); setProgramFilter('all'); setBatchFilter('all'); setPage(1); };
-  const updateProgram = (v: string) => { setProgramFilter(v); setBatchFilter('all'); setPage(1); };
-  const updateBatch = (v: string) => { setBatchFilter(v); setPage(1); };
-  const updateSession = (v: string) => { setSessionFilter(v); setPage(1); };
-  const updateSemester = (v: string) => { setSemesterFilter(v); setPage(1); };
-  const updateStatus = (v: StatusFilter) => { setStatusFilter(v); setPage(1); };
+  const updateSearch = (v: string) => { setSearchInput(v); };
+  const updateSemester = (v: string) => { setSemesterFilter(v); setPage(1); resetSelection(); };
+  const updateStatus = (v: StatusFilter) => {
+    setStatusFilter(v);
+    // Spec §8.8: Defaulters tab defaults to balance descending (highest dues first)
+    if (v === 'dues') { setSortKey('balance'); setSortDir('desc'); }
+    setPage(1); resetSelection();
+  };
   const updatePageSize = (v: string) => { setPageSize(parseInt(v, 10)); setPage(1); };
 
-  // Apply filters — search parity with GlobalSearch (name/sno/father/contact/cnic/address/domicile/emergency/course/batch)
+  // §22.3 new filters — balance range, registration date range, no-charge-this-term.
+  const updateBalMin = (v: string) => { setBalMin(v); setPage(1); resetSelection(); };
+  const updateBalMax = (v: string) => { setBalMax(v); setPage(1); resetSelection(); };
+  const updateRegFrom = (v: string) => { setRegFrom(v); setPage(1); resetSelection(); };
+  const updateRegTo = (v: string) => { setRegTo(v); setPage(1); resetSelection(); };
+  const updateNoCharge = (v: 'all' | 'yes' | 'no') => { setNoCharge(v); setPage(1); resetSelection(); };
+
+  // Apply filters — search parity with GlobalSearch (§22.2).
   const filteredStudents = allStudents.filter((s) => {
     if (search) {
       const q = search.toLowerCase();
-      const { courseLabel, subLabel } = getSubCourseInfo(s.program);
-      const haystack = [
-        s.name, s.sno.toString(), s.fatherName,
-        s.contact ?? '', s.cnic ?? '', s.cnic?.replace(/\D/g,'') ?? '',
-        s.address ?? '', s.domicile ?? '', s.emergencyContact ?? '',
-        s.gender ?? '', courseLabel, subLabel, s.batch, s.session.toString(),
-      ];
-      if (!haystack.some((v) => v.toLowerCase().includes(q))) return false;
+      if (/^[\d+()\s-]+$/.test(search)) {
+        // Numeric query matches SNO / CNIC / phone, ignoring punctuation and a
+        // leading 0 or +92: 3520212345671 finds 35202-1234567-1.
+        const qDigits = search.replace(/\D/g, '').replace(/^920?/, '');
+        if (qDigits) {
+          const digits = [
+            s.sno.toString(),
+            (s.cnic ?? '').replace(/\D/g, '').replace(/^920?/, ''),
+            (s.contact ?? '').replace(/\D/g, '').replace(/^920?/, ''),
+            (s.emergencyContact ?? '').replace(/\D/g, '').replace(/^920?/, ''),
+          ];
+          if (!digits.some((v) => v.includes(qDigits))) return false;
+        }
+      } else {
+        const { courseLabel, subLabel } = getSubCourseInfo(s.program);
+        const haystack = [
+          s.name, s.sno.toString(), s.fatherName,
+          s.contact ?? '', s.cnic ?? '', s.cnic?.replace(/\D/g,'') ?? '',
+          s.address ?? '', s.domicile ?? '', s.emergencyContact ?? '',
+          s.gender ?? '', courseLabel, subLabel, s.batch, s.session.toString(),
+        ];
+        if (!haystack.some((v) => v.toLowerCase().includes(q))) return false;
+      }
     }
     if (courseFilter !== 'all' && s.course !== courseFilter) return false;
     if (programFilter !== 'all' && s.program !== programFilter) return false;
@@ -241,6 +384,19 @@ export default function StudentList() {
     if (statusFilter === 'struck_off' && !s.struckOff) return false;
     if (statusFilter === 'dues' && (s.computedBalance <= 0 || s.struckOff)) return false;
     if (statusFilter === 'credit' && s.computedBalance >= 0) return false;
+
+    // Balance range — combines with every other filter (§30).
+    if (balMin !== '' && s.computedBalance < Number(balMin)) return false;
+    if (balMax !== '' && s.computedBalance > Number(balMax)) return false;
+
+    // Registration date range (local ISO dates compare lexically).
+    if (regFrom && s.regDate.slice(0, 10) < regFrom) return false;
+    if (regTo && s.regDate.slice(0, 10) > regTo) return false;
+
+    // No fee charge for the student's current term.
+    const hasCharge = chargedCurrent.has(`${s.sno}|${s.semester}`);
+    if (noCharge === 'yes' && hasCharge) return false;
+    if (noCharge === 'no' && !hasCharge) return false;
 
     return true;
   });
@@ -257,6 +413,7 @@ export default function StudentList() {
       case 'semester': return (parseInt(a.semester, 10) - parseInt(b.semester, 10)) * dir;
       case 'regDate': return a.regDate.localeCompare(b.regDate) * dir;
       case 'balance': return (a.computedBalance - b.computedBalance) * dir;
+      case 'lastPay': return (lastPayBySno.get(a.sno) ?? '').localeCompare(lastPayBySno.get(b.sno) ?? '') * dir;
       default: return 0;
     }
   });
@@ -286,20 +443,27 @@ export default function StudentList() {
   const hasActiveFilters =
     search !== '' || courseFilter !== 'all' || programFilter !== 'all' ||
     batchFilter !== 'all' || sessionFilter !== 'all' || semesterFilter !== 'all' ||
-    statusFilter !== 'all';
+    statusFilter !== 'all' || balMin !== '' || balMax !== '' || regFrom !== '' ||
+    regTo !== '' || noCharge !== 'all';
 
   const clearFilters = () => {
+    setSearchInput('');
     setSearch('');
     setCourseFilter('all');
     setProgramFilter('all');
     setBatchFilter('all');
     setSessionFilter('all');
     setSemesterFilter('all');
+    setIncludeCompleted(false);
     setStatusFilter('all');
+    setBalMin(''); setBalMax(''); setRegFrom(''); setRegTo(''); setNoCharge('all');
     setPage(1);
+    resetSelection();
   };
 
   const handleSort = (key: SortKey) => {
+    // §22.5 column sort on SNO / Name / Balance / Last payment only.
+    if (key !== 'sno' && key !== 'name' && key !== 'balance' && key !== 'lastPay') return;
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -309,15 +473,17 @@ export default function StudentList() {
     setPage(1);
   };
 
-  // Bulk selection
+  // Bulk selection (§22.6).
   const toggleSelect = (sno: number) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(sno)) next.delete(sno); else next.add(sno);
-      return next;
-    });
+    const base = selectAllFiltered
+      ? new Set(filteredStudents.map((s) => s.sno))
+      : new Set(selected);
+    if (base.has(sno)) base.delete(sno); else base.add(sno);
+    setSelectAllFiltered(false);
+    setSelected(base);
   };
   const toggleSelectAllPage = () => {
+    if (selectAllFiltered) { setSelectAllFiltered(false); setSelected(new Set()); return; }
     const pageSnos = paginatedStudents.map(s => s.sno);
     const allSelected = pageSnos.every(sno => selected.has(sno));
     setSelected(prev => {
@@ -327,116 +493,107 @@ export default function StudentList() {
       return next;
     });
   };
+  // The effective selection is either the explicit set, or — when "select all
+  // filtered" is on — every row the current filter matches, not just the page.
+  // A plain derivation: the React Compiler memoizes it, and `filteredStudents` is
+  // recomputed per render, so a manual useMemo here cannot be preserved.
+  const effectiveSelected = selectAllFiltered
+    ? new Set(filteredStudents.map((s) => s.sno))
+    : selected;
+  const selectedCount = effectiveSelected.size;
+  const pageAllSelected = paginatedStudents.length > 0 && paginatedStudents.every((s) => effectiveSelected.has(s.sno));
+
+  // §22.5 column chooser — is this optional column currently visible for this user?
+  const showCol = (id: string) => !hiddenColumns.includes(id);
+  const toggleColumn = (id: string) => {
+    const next = hiddenColumns.includes(id)
+      ? hiddenColumns.filter((c) => c !== id)
+      : [...hiddenColumns, id];
+    setHiddenColumns(userName, next);
+  };
+
+  // §22.4 apply a saved view. Local state is the source of truth (the effect owns
+  // the address), so re-seed every filter rather than only navigating — otherwise
+  // the mirror effect would immediately overwrite the link back to the old view.
+  const applyQuery = (qs: string) => {
+    const p = new URLSearchParams(qs);
+    const g = (k: string, d = 'all') => p.get(k) ?? d;
+    const qv = p.get('q') ?? '';
+    setSearchInput(qv); setSearch(qv);
+    setCourseFilter(g('course')); setProgramFilter(g('program')); setBatchFilter(g('batch'));
+    setSessionFilter(g('session')); setSemesterFilter(g('term'));
+    setStatusFilter(g('status') as StatusFilter);
+    setSortKey(g('sort') as SortKey); setSortDir(p.get('dir') === 'desc' ? 'desc' : 'asc');
+    setBalMin(p.get('balmin') ?? ''); setBalMax(p.get('balmax') ?? '');
+    setRegFrom(p.get('from') ?? ''); setRegTo(p.get('to') ?? '');
+    setNoCharge((p.get('nocharge') as 'all' | 'yes' | 'no') ?? 'all');
+    setPage(parseInt(p.get('page') ?? '1', 10) || 1);
+    const s = parseInt(p.get('size') ?? '20', 10); setPageSize([20, 50, 100].includes(s) ? s : 20);
+    resetSelection();
+    setViewsOpen(false);
+  };
+
   const exportSelectedCSV = () => {
-    const selectedStudents = sortedStudents.filter(s => selected.has(s.sno));
-    const header = ['SNO','Name','Father','Course','Sub-course','Batch','Session','Term','Contact','CNIC','Reg Date','Status','Balance'];
-    const rows = selectedStudents.map(s => {
+    const picked = sortedStudents.filter((s) => effectiveSelected.has(s.sno));
+    // §28: a counter operator exports without the balance column.
+    const baseHeader = ['SNO','Name','Father','Course','Sub-course','Batch','Session','Term','Contact','CNIC','Reg Date','Status','Last Payment'];
+    const header = seesBalances ? [...baseHeader, 'Balance'] : baseHeader;
+    const rows = picked.map(s => {
       const info = getSubCourseInfo(s.program);
       const status = s.struckOff ? 'Struck Off' : s.computedBalance > 0 ? 'Dues' : s.computedBalance < 0 ? 'Credit' : 'Active';
-      return [s.sno, s.name, s.fatherName, info.courseLabel, info.subLabel, s.batch, s.session, getTermLabel(info.system, s.semester), s.contact ?? '', s.cnic ?? '', s.regDate, status, s.computedBalance];
+      const base = [s.sno, s.name, s.fatherName, info.courseLabel, info.subLabel, s.batch, s.session, getTermLabel(info.system, s.semester), s.contact ?? '', s.cnic ?? '', s.regDate, status, lastPayBySno.get(s.sno) ?? ''];
+      return seesBalances ? [...base, s.computedBalance] : base;
     });
     const csv = [header, ...rows].map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a'); link.href = url; link.download = `students-selected-${new Date().toISOString().split('T')[0]}.csv`; link.click(); URL.revokeObjectURL(url);
+    const link = document.createElement('a'); link.href = url; link.download = `students-selected-${dayKey()}.csv`; link.click(); URL.revokeObjectURL(url);
   };
+  const closeBulkModal = () => { setShowBulkStrike(false); setBulkResult(null); setBulkReason(''); };
   const handleBulkStrike = () => {
-    if (!bulkReason.trim() || selected.size===0) return;
+    if (!bulkReason.trim() || effectiveSelected.size === 0) return;
     const strikeOff = useStudentStore.getState().strikeOff;
-    const userName = useAuthStore.getState().user?.name ?? 'Admin';
     const addLog = useAuditStore.getState().addLog;
-    selected.forEach(sno => {
-      strikeOff(sno, bulkReason.trim(), 'Bulk action', new Date().toISOString().split('T')[0]);
-      addLog({ user: userName, action: 'Struck Off', studentSno: sno, details: `Bulk struck off — Reason: ${bulkReason.trim()}` });
+    const reason = bulkReason.trim();
+    const snos = [...effectiveSelected];
+    snos.forEach((sno) => {
+      strikeOff(sno, reason, 'Bulk action', dayKey());
+      addLog({ user: userName, action: 'Struck Off', studentSno: sno, details: `Bulk struck off — Reason: ${reason}` });
     });
+    // Keep the modal open and switch to the result view so the batch can be undone (§26.4).
+    setBulkResult({ snos, reason });
     setSelected(new Set());
-    setShowBulkStrike(false);
-    setBulkReason('');
+    setSelectAllFiltered(false);
   };
-  const parseCSV = (text: string) => {
-    const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
-    if (lines.length < 2) return { header: [], rows: [] as string[][] };
-    const split = (line: string) => {
-      const out: string[] = []; let cur=''; let inQ=false;
-      for (let i=0;i<line.length;i++){ const c=line[i]; if(c==='"'){ if(inQ && line[i+1]==='"'){cur+='"';i++;} else inQ=!inQ;} else if(c===',' && !inQ){ out.push(cur); cur='';} else cur+=c; }
-      out.push(cur); return out.map(s=>s.trim().replace(/^\"|\"$/g,''));
-    };
-    const header = split(lines[0]).map(h=>h.toLowerCase());
-    const rows = lines.slice(1).map(split);
-    return { header, rows };
-  };
-  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const { header, rows } = parseCSV(reader.result as string);
-      setImportHeader(header);
-      setImportRows(rows.map(r => ({ raw: r })));
-      setImportOpen(true);
-    };
-    reader.readAsText(file);
-    e.target.value='';
-  };
-  const handleConfirmImport = () => {
-    const addStudent = useStudentStore.getState().addStudent;
-    const userName = useAuthStore.getState().user?.name ?? 'Admin';
+  const handleUndoBulkStrike = () => {
+    if (!bulkResult) return;
+    const reverseStrikeOff = useStudentStore.getState().reverseStrikeOff;
     const addLog = useAuditStore.getState().addLog;
-    const h = importHeader;
-    const idx = (name: string) => h.indexOf(name);
-    let count=0;
-    importRows.forEach(({ raw }) => {
-      const get = (n: string) => { const i=idx(n); return i>=0 ? raw[i]?.trim()||'' : ''; };
-      const name = get('name'); const father = get('fathername')||get('father name');
-      if (!name || !father) return;
-      const course = (get('course') as any) || 'Paramedics';
-      const program = (get('program')||get('sub-course')||get('subcourse') as any) || 'Health';
-      const batch = (get('batch') as any) || '17th Batch';
-      const session = parseInt(get('session')||'2026',10)||2026;
-      const semester = (get('semester')||get('term') as any) || '1st';
-      try {
-        const created = addStudent({
-          name, fatherName: father,
-          contact: normalizeContact(get('contact')),
-          cnic: normalizeCNIC(get('cnic')),
-          address: get('address')||null,
-          regDate: get('regdate')||get('reg date')||new Date().toISOString().split('T')[0],
-          photoUrl: null,
-          dob: get('dob')||null,
-          gender: (get('gender') as any)||null,
-          domicile: get('domicile')||null,
-          emergencyContact: normalizeContact(get('emergencycontact')||get('emergency contact')),
-          course, program, batch, session, semester,
-        });
-        addLog({ user: userName, action: 'New Admission', studentSno: created.sno, details: `Bulk import — ${created.name} · ${program} · ${batch}` });
-        count++;
-      } catch {}
+    bulkResult.snos.forEach((sno) => {
+      reverseStrikeOff(sno);
+      addLog({ user: userName, action: 'Struck Off Reversed', studentSno: sno, details: `Undo bulk strike-off — Reason: ${bulkResult.reason}` });
     });
-    setImportOpen(false);
-    setImportRows([]);
-    setImportHeader([]);
+    closeBulkModal();
   };
-  const downloadTemplate = () => {
-    const header = ['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact','course','program','batch','session','semester'];
-    const sample = ['Ali Khan','Umar Khan','+923001234567','15602-1234567-1','Mingora Swat','2026-03-20','2000-01-01','Male','Swat','+923001234568','Paramedics','Health','17th Batch','2026','1st'];
-    const csv = [header,sample].map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');
-    const blob=new Blob([csv],{type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='students-template.csv'; a.click(); URL.revokeObjectURL(url);
-  };
-
   const exportCSV = () => {
-    const header = [
+    // §28 + §22.5: same layout for all filtered rows; a counter operator gets no
+    // balance column. Last payment is included so the file matches the directory.
+    const baseHeader = [
       'SNO', 'Name', 'Father', 'Course', 'Sub-course', 'Batch', 'Session',
-      'Term', 'Contact', 'CNIC', 'Reg Date', 'Status', 'Balance',
+      'Term', 'Contact', 'CNIC', 'Reg Date', 'Status', 'Last Payment',
     ];
+    const header = seesBalances ? [...baseHeader, 'Balance'] : baseHeader;
     const rows = sortedStudents.map((s) => {
       const info = getSubCourseInfo(s.program);
       const status = s.struckOff
         ? 'Struck Off'
         : s.computedBalance > 0 ? 'Dues' : s.computedBalance < 0 ? 'Credit' : 'Active';
-      return [
+      const base = [
         s.sno, s.name, s.fatherName, info.courseLabel, info.subLabel, s.batch,
         s.session, getTermLabel(info.system, s.semester), s.contact ?? '',
-        s.cnic ?? '', s.regDate, status, s.computedBalance,
+        s.cnic ?? '', s.regDate, status, lastPayBySno.get(s.sno) ?? '',
       ];
+      return seesBalances ? [...base, s.computedBalance] : base;
     });
     const csv = [header, ...rows]
       .map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
@@ -445,17 +602,32 @@ export default function StudentList() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `students-${new Date().toISOString().split('T')[0]}.csv`;
+    link.download = `students-${dayKey()}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
+  const isFreshInstall = allStudents.length === 0;
+  if (isFreshInstall) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <h1 className="text-[24px] font-semibold text-slate-900">No students yet — start with your first admission.</h1>
+        <p className="text-[14px] text-slate-500 mt-2">Admissions create the SNO, lock the fee, and open the ledger.</p>
+        <Button className="mt-6" onClick={() => navigate('/admissions/new')}>
+          <Plus size={14} className="mr-1.5" />
+          New Admission
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
-      {/* Header — desktop compact */}
+      {/* Breadcrumb + header */}
+      <div className="text-[12px] text-slate-500">Students</div>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-[16px] font-bold text-slate-900 tracking-tight">Students</h1>
+          <h1 className="text-[24px] font-semibold text-slate-900 tracking-tight">Student Directory</h1>
           <span className="text-[11px] text-slate-500">{filteredStudents.length} total</span>
           <div className="flex items-center gap-1 ml-2">
             {statusChips.map((chip) => {
@@ -492,9 +664,9 @@ export default function StudentList() {
           <div className="relative flex-1 min-w-[180px] max-w-[280px]">
             <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <Input
-              value={search}
+              value={searchInput}
               onChange={(e) => updateSearch(e.target.value)}
-              placeholder="Search…"
+              placeholder="Search by SNO, name, father, CNIC, phone"
               className="pl-7 h-7 text-[12px]"
             />
           </div>
@@ -512,18 +684,68 @@ export default function StudentList() {
             <Download size={11} className="mr-1" />
             Export
           </Button>
-          <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={() => fileInputRef.current?.click()}>
-            <Upload size={11} className="mr-1" />
-            Import
-          </Button>
-          <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImportFile} />
-          <Button variant="ghost" size="sm" className="h-6 text-[11px] px-2" onClick={downloadTemplate}>
-            Template
-          </Button>
+          {canImport && (
+            <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={() => navigate('/import')}>
+              <Upload size={11} className="mr-1" />
+              Import
+            </Button>
+          )}
           <Button variant="outline" size="sm" className="h-6 text-[11px] px-2" onClick={() => window.print()}>
             <Printer size={11} className="mr-1" />
             Print
           </Button>
+
+          {/* §22.4 Saved views — scoped to this user, persisted */}
+          <div className="relative">
+            <Button variant="outline" size="sm" className="h-6 px-2 text-micro" onClick={() => { setViewsOpen((o) => !o); setColPickerOpen(false); }}>
+              <Bookmark size={11} className="mr-1" />
+              Views
+            </Button>
+            {viewsOpen && (
+              <div className="absolute right-0 mt-1 z-30 w-64 rounded-card border border-hairline bg-panel p-2 shadow-overlay">
+                <div className="px-1 pb-1.5 text-micro font-medium text-ink-muted">Save current filters as a view</div>
+                <div className="flex gap-1 pb-2">
+                  <Input value={newViewName} onChange={(e) => setNewViewName(e.target.value)} placeholder="e.g. BSN defaulters" className="h-6 text-micro" />
+                  <Button size="sm" variant="subtle" className="h-6 px-2" disabled={!newViewName.trim()} onClick={() => { addView(userName, newViewName.trim(), searchParams.toString()); setNewViewName(''); }}>
+                    <Save size={12} />
+                  </Button>
+                </div>
+                {myViews.length === 0 ? (
+                  <div className="px-1 py-1 text-micro text-ink-subtle">No saved views yet.</div>
+                ) : (
+                  <div className="max-h-40 overflow-auto">
+                    {myViews.map((v) => (
+                      <div key={v.id} className="flex items-center gap-1 rounded-control px-1 py-1 hover:bg-accent-soft">
+                        <button type="button" className="flex-1 text-left text-body text-ink truncate cursor-pointer" onClick={() => applyQuery(v.query)}>{v.name}</button>
+                        <button type="button" title="Delete view" className="text-ink-subtle hover:text-dues cursor-pointer" onClick={() => removeView(v.id)}>
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* §22.5 Column chooser */}
+          <div className="relative">
+            <Button variant="outline" size="sm" className="h-6 px-2 text-micro" onClick={() => { setColPickerOpen((o) => !o); setViewsOpen(false); }}>
+              <Columns3 size={11} className="mr-1" />
+              Columns
+            </Button>
+            {colPickerOpen && (
+              <div className="absolute right-0 mt-1 z-30 w-44 rounded-card border border-hairline bg-panel p-1.5 shadow-overlay">
+                {COLUMNS.map((c) => (
+                  <label key={c.id} className="flex items-center gap-2 rounded-control px-1.5 py-1 text-body text-ink cursor-pointer">
+                    <input type="checkbox" checked={showCol(c.id)} onChange={() => toggleColumn(c.id)} className="w-3.5 h-3.5 accent-blue-600" />
+                    {c.label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
           <Button variant="ghost" size="sm" className="h-6 text-[11px] px-2" onClick={() => setFiltersOpen((o) => !o)}>
             <SlidersHorizontal size={11} className="mr-1" />
             Filters
@@ -534,53 +756,23 @@ export default function StudentList() {
         {/* Row 2: filter selects — compact */}
         {filtersOpen && (
           <div className="flex flex-wrap gap-1.5 items-center pt-2 border-t border-slate-200">
-            <Select value={courseFilter} onValueChange={updateCourse}>
-              <SelectTrigger className="w-[140px] h-7 text-[12px]">
-                <SelectValue placeholder="Course" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Courses</SelectItem>
-                {COURSES.map((c) => (
-                  <SelectItem key={c.code} value={c.code}>{c.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={programFilter} onValueChange={updateProgram}>
-              <SelectTrigger className="w-[130px] h-7 text-[12px]">
-                <SelectValue placeholder="Program" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Programs</SelectItem>
-                {filterProgramOptions.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={batchFilter} onValueChange={updateBatch}>
-              <SelectTrigger className="w-[140px] h-7 text-[12px]">
-                <SelectValue placeholder="Batch" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Batches</SelectItem>
-                {filterBatchOptions.map((b) => (
-                  <SelectItem key={b.id} value={b.name}>{b.name} · {b.session}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={sessionFilter} onValueChange={updateSession}>
-              <SelectTrigger className="w-[100px] h-7 text-[12px]">
-                <SelectValue placeholder="Session" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Sessions</SelectItem>
-                {SESSION_OPTIONS.map((y) => (
-                  <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* §38 The four academic filters are the one shared selector, same rules as
+                everywhere else; in the directory context every level is optional ("All …"). */}
+            <AcademicSelector
+              context="directory"
+              includeCompleted={includeCompleted}
+              value={selection}
+              onChange={applySelection}
+            />
+            <label className="flex items-center gap-1.5 text-micro text-ink-muted cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeCompleted}
+                onChange={(e) => { setIncludeCompleted(e.target.checked); setPage(1); }}
+                className="accent-blue-600"
+              />
+              Include completed
+            </label>
 
             <Select value={semesterFilter} onValueChange={updateSemester}>
               <SelectTrigger className="w-[110px] h-7 text-[12px]">
@@ -606,87 +798,133 @@ export default function StudentList() {
                 <SelectItem value="credit">Credit</SelectItem>
               </SelectContent>
             </Select>
+
+            {/* §22.3 Balance range — e.g. "dues above 20,000". Combines with all filters. */}
+            <div className="flex items-center gap-1">
+              <Input type="number" value={balMin} onChange={(e) => updateBalMin(e.target.value)} placeholder="Bal min" className="w-24 h-7 text-body" />
+              <span className="text-micro text-ink-muted">–</span>
+              <Input type="number" value={balMax} onChange={(e) => updateBalMax(e.target.value)} placeholder="Bal max" className="w-24 h-7 text-body" />
+            </div>
+
+            {/* §22.3 Registration date range */}
+            <Input type="date" value={regFrom} onChange={(e) => updateRegFrom(e.target.value)} className="w-36 h-7 text-body" aria-label="Registered from" />
+            <Input type="date" value={regTo} onChange={(e) => updateRegTo(e.target.value)} className="w-36 h-7 text-body" aria-label="Registered to" />
+
+            {/* §22.3 No fee charge for the current term */}
+            <Select value={noCharge} onValueChange={(v) => updateNoCharge(v as 'all' | 'yes' | 'no')}>
+              <SelectTrigger className="w-40 h-7 text-body">
+                <SelectValue placeholder="Fee charge" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Fee charge: any</SelectItem>
+                <SelectItem value="yes">No charge this term</SelectItem>
+                <SelectItem value="no">Charged this term</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         )}
       </div>
 
+      {/* §22.6 "Select all N filtered results" — page selected but more exist */}
+      {pageAllSelected && !selectAllFiltered && filteredStudents.length > selectedCount && (
+        <div className="bg-accent-soft border border-hairline rounded-card px-4 py-2 flex flex-wrap items-center gap-2">
+          <span className="text-body text-ink-secondary">Only the current page is selected.</span>
+          <button type="button" className="text-body font-medium text-ink underline cursor-pointer" onClick={() => setSelectAllFiltered(true)}>
+            Select all {filteredStudents.length} {pluralize(filteredStudents.length, 'student')} matching this filter
+          </button>
+        </div>
+      )}
+
       {/* Bulk bar */}
-      {selected.size > 0 && (
+      {selectedCount > 0 && (
         <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 flex flex-wrap items-center gap-3">
-          <span className="text-sm font-medium text-blue-700">{selected.size} selected</span>
+          <span className="text-sm font-medium text-blue-700">
+            {selectAllFiltered ? `All ${selectedCount} filtered selected` : `${selectedCount} selected`}
+          </span>
           <div className="flex-1" />
           <Button variant="outline" size="sm" onClick={exportSelectedCSV}>
             <Download size={14} className="mr-1.5" /> Export Selected
           </Button>
-          {canEdit && (
+          {canBulkStrike && (
             <Button variant="destructive" size="sm" onClick={() => setShowBulkStrike(true)}>
               <UserX size={14} className="mr-1.5" /> Bulk Struck Off
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+          <Button variant="ghost" size="sm" onClick={() => { setSelected(new Set()); setSelectAllFiltered(false); }}>
             <X size={14} className="mr-1.5" /> Clear
           </Button>
         </div>
       )}
 
-      {/* Bulk Strike Modal */}
-      {showBulkStrike && (
-        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
-            <h3 className="font-semibold text-slate-900">Bulk Struck Off ({selected.size} students)</h3>
-            <p className="text-sm text-slate-500">This will mark all selected students as struck off and log to audit.</p>
-            <Input value={bulkReason} onChange={e=>setBulkReason(e.target.value)} placeholder="Reason * — e.g. Non-payment of fees" />
-            {!bulkReason.trim() && <p className="text-xs text-red-500">Reason required</p>}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={()=>setShowBulkStrike(false)}>Cancel</Button>
-              <Button variant="destructive" disabled={!bulkReason.trim()} onClick={handleBulkStrike}>Confirm</Button>
+      {/* Bulk Strike Modal — confirmation summary (§26.4), then an undoable result in the same overlay */}
+      {showBulkStrike && (() => {
+        const scopeSet = new Set(bulkResult ? bulkResult.snos : [...effectiveSelected]);
+        const sel = allStudents.filter((s) => scopeSet.has(s.sno));
+        const totalDues = sel.reduce((n, s) => n + Math.max(0, s.computedBalance), 0);
+        const totalCredit = sel.reduce((n, s) => n + Math.max(0, -s.computedBalance), 0);
+        return (
+          <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-panel rounded-card shadow-overlay p-6 w-full max-w-md space-y-4">
+              {bulkResult ? (
+                <>
+                  <h3 className="text-title font-semibold text-ink">Struck off {bulkResult.snos.length} students</h3>
+                  <div className="rounded-card border border-hairline divide-y divide-hairline">
+                    <SummaryRow label="Students struck off" value={String(bulkResult.snos.length)} />
+                    <SummaryRow label="Total dues" value={formatPKR(totalDues)} />
+                    <SummaryRow label="Total credit" value={formatPKR(totalCredit)} />
+                    <SummaryRow label="Reason" value={bulkResult.reason} />
+                  </div>
+                  <p className="text-meta text-ink-muted">Undo returns every student in this batch to Active — the ledger and balance are kept.</p>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button variant="outline" onClick={closeBulkModal}>Close</Button>
+                    <Button variant="subtle" onClick={handleUndoBulkStrike}>
+                      <RotateCcw size={14} className="mr-1.5" /> Undo (reinstate all {bulkResult.snos.length})
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-title font-semibold text-ink">Bulk strike off ({selectedCount} students)</h3>
+                  <p className="text-body text-ink-muted">Review the summary before confirming — nothing changes until you do.</p>
+                  <div className="rounded-card border border-hairline divide-y divide-hairline">
+                    <SummaryRow label="Students selected" value={String(selectedCount)} />
+                    <SummaryRow label="Total dues" value={formatPKR(totalDues)} />
+                    <SummaryRow label="Total credit" value={formatPKR(totalCredit)} />
+                    <SummaryRow label="Date" value={formatDate(dayKey())} />
+                  </div>
+                  <Input value={bulkReason} onChange={(e) => setBulkReason(e.target.value)} placeholder="Reason * — e.g. Non-payment of fees" />
+                  {!bulkReason.trim() && <p className="text-micro text-danger">Reason required</p>}
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={closeBulkModal}>Cancel</Button>
+                    <Button variant="destructive" disabled={!bulkReason.trim() || selectedCount === 0} onClick={handleBulkStrike}>Confirm</Button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
-      {/* Import Preview Modal */}
-      {importOpen && (
-        <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col">
-            <div className="p-5 border-b">
-              <h3 className="font-semibold">Import Preview — {importRows.length} rows</h3>
-              <p className="text-xs text-slate-500 mt-1">Header: {importHeader.join(', ')}</p>
-              <p className="text-xs text-slate-400">Required: name, fatherName. Optional: contact/cnic/address/regDate/course/program/batch/session/semester/dob/gender/domicile/emergencyContact</p>
-            </div>
-            <div className="flex-1 overflow-auto p-5">
-              <div className="text-xs text-slate-600 space-y-1 max-h-60 overflow-auto border rounded-lg p-3 bg-slate-50">
-                {importRows.slice(0,10).map((r,i)=><div key={i} className="truncate">{i+1}. {r.raw.join(' | ')}</div>)}
-                {importRows.length>10 && <div className="text-slate-400">...and {importRows.length-10} more</div>}
-              </div>
-            </div>
-            <div className="p-5 border-t flex justify-end gap-2">
-              <Button variant="outline" onClick={()=>setImportOpen(false)}>Cancel</Button>
-              <Button onClick={handleConfirmImport}>Import {importRows.length} Students</Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Table — desktop dense */}
+      {/* Table — desktop dense (spec §8.8: sort on SNO / Name / Balance only; sticky header) */}
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         <Table>
-          <TableHeader>
+          <TableHeader className="sticky top-0 bg-white z-10">
             <TableRow>
               <TableHead className="w-[30px]">
-                <input type="checkbox" checked={paginatedStudents.length>0 && paginatedStudents.every(s=>selected.has(s.sno))} onChange={toggleSelectAllPage} className="w-3.5 h-3.5 accent-blue-600" />
+                <input type="checkbox" checked={pageAllSelected} onChange={toggleSelectAllPage} className="w-3.5 h-3.5 accent-blue-600" />
               </TableHead>
-              <TableHead className="w-[40px]">Photo</TableHead>
-              <SortableHead label="SNO" sortKey="sno" activeKey={sortKey} dir={sortDir} onSort={handleSort} className="w-[70px]" />
-              <SortableHead label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHead label="Program" sortKey="program" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHead label="Batch" sortKey="batch" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHead label="Session" sortKey="session" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHead label="Term" sortKey="semester" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <TableHead>Contact</TableHead>
-              <SortableHead label="Reg Date" sortKey="regDate" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHead label="Balance" sortKey="balance" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <TableHead>Status</TableHead>
+              {showCol('photo') && <TableHead className="w-[40px]">Photo</TableHead>}
+              <TableSortHead label="SNO" sortKey="sno" activeKey={sortKey} dir={sortDir} onSort={handleSort} className="w-[70px]" />
+              <TableSortHead label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              {showCol('program') && <TableHead>Program</TableHead>}
+              {showCol('batch') && <TableHead>Batch</TableHead>}
+              {showCol('session') && <TableHead>Session</TableHead>}
+              {showCol('term') && <TableHead>Term</TableHead>}
+              {showCol('contact') && <TableHead>Contact</TableHead>}
+              {showCol('regDate') && <TableHead>Reg Date</TableHead>}
+              {showCol('lastPay') && <TableSortHead label="Last payment" sortKey="lastPay" activeKey={sortKey} dir={sortDir} onSort={handleSort} />}
+              {showCol('balance') && <TableSortHead label="Balance" sortKey="balance" activeKey={sortKey} dir={sortDir} onSort={handleSort} num />}
+              {showCol('status') && <TableHead>Status</TableHead>}
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -698,28 +936,33 @@ export default function StudentList() {
                 onClick={() => navigate(`/students/${student.sno}`)}
               >
                 <TableCell onClick={e=>e.stopPropagation()}>
-                  <input type="checkbox" checked={selected.has(student.sno)} onChange={()=>toggleSelect(student.sno)} className="w-4 h-4 accent-blue-600" />
+                  <input type="checkbox" checked={effectiveSelected.has(student.sno)} onChange={()=>toggleSelect(student.sno)} className="w-4 h-4 accent-blue-600" />
                 </TableCell>
-                <TableCell>
-                  <div className="w-9 h-11 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center">
-                    {student.photoUrl ? <img src={student.photoUrl} alt={student.name} className="w-full h-full object-cover" /> : <User size={14} className="text-slate-300" />}
-                  </div>
-                </TableCell>
-                <TableCell className="font-medium text-slate-900">{student.sno}</TableCell>
+                {showCol('photo') && (
+                  <TableCell>
+                    <div className="w-9 h-11 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center">
+                      {student.photoUrl ? <img src={student.photoUrl} alt={student.name} className="w-full h-full object-cover" /> : <User size={14} className="text-slate-300" />}
+                    </div>
+                  </TableCell>
+                )}
+                <TableCell className="font-medium text-slate-900 tabular-nums"><SnoDisplay sno={student.sno} /></TableCell>
                 <TableCell>
                   <div className="font-medium text-slate-900">{student.name}</div>
                   <div className="text-xs text-slate-500 mt-0.5">{student.fatherName}</div>
                 </TableCell>
-                <TableCell><ProgramCell program={student.program} /></TableCell>
-                <TableCell className="text-slate-600">{student.batch}</TableCell>
-                <TableCell className="text-slate-600">{student.session}</TableCell>
-                <TableCell><TermCell program={student.program} semester={student.semester} /></TableCell>
-                <TableCell className="text-slate-600">{student.contact ?? '—'}</TableCell>
-                <TableCell className="text-slate-600">{formatDate(student.regDate)}</TableCell>
-                <TableCell><BalanceCell balance={student.computedBalance} /></TableCell>
-                <TableCell>
-                  <StatusBadge badge={student.badge} balance={student.computedBalance} />
-                </TableCell>
+                {showCol('program') && <TableCell><ProgramCell program={student.program} /></TableCell>}
+                {showCol('batch') && <TableCell className="text-slate-600">{student.batch}</TableCell>}
+                {showCol('session') && <TableCell className="text-slate-600">{student.session}</TableCell>}
+                {showCol('term') && <TableCell><TermCell program={student.program} semester={student.semester} /></TableCell>}
+                {showCol('contact') && <TableCell className="text-slate-600">{student.contact ?? '—'}</TableCell>}
+                {showCol('regDate') && <TableCell className="text-slate-600">{formatDate(student.regDate)}</TableCell>}
+                {showCol('lastPay') && <TableCell className="text-slate-600">{(() => { const d = lastPayBySno.get(student.sno); return d ? formatDate(d) : '—'; })()}</TableCell>}
+                {showCol('balance') && <TableCell><BalanceCell balance={student.computedBalance} /></TableCell>}
+                {showCol('status') && (
+                  <TableCell>
+                    <StudentStatusBadge badge={student.badge} balance={student.computedBalance} />
+                  </TableCell>
+                )}
                 <TableCell>
                   <div className="flex items-center justify-end gap-0.5">
                     <IconButton title="View details" onClick={() => navigate(`/students/${student.sno}`)}>
@@ -747,8 +990,8 @@ export default function StudentList() {
         {sortedStudents.length === 0 && (
           <div className="text-center py-16">
             <SearchX size={40} className="mx-auto text-slate-300" />
-            <p className="mt-3 text-slate-600 font-medium">No students found</p>
-            <p className="text-sm text-slate-400 mt-1">Try adjusting your search or filters</p>
+            <p className="mt-3 text-slate-600 font-medium">No students match these filters — try clearing Batch or Semester.</p>
+            <p className="text-sm text-slate-400 mt-1">Filters and search combine; clearing one often resolves it.</p>
             {hasActiveFilters && (
               <Button variant="outline" size="sm" className="mt-4" onClick={clearFilters}>
                 <FilterX size={14} className="mr-1.5" />

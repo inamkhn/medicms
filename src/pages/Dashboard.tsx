@@ -1,253 +1,358 @@
 // ============================================
-// MediCMS Desktop v4.0 - Dashboard
+// MediCMS Desktop v4.0 - Dashboard (Feature 2)
+// Layout is the design doc's §13, figure-for-figure: a greeting header, TODAY's
+// collection, the Students / Fees / Money columns, Needs attention, Top defaulters
+// beside Today's payments, and quick actions. No arithmetic lives here — every
+// number comes from lib/dashboardMetrics so its definition is stated once.
 // ============================================
 
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, UserX, IndianRupee, RefreshCw, Plus, CreditCard, Search, FileText, Wifi, Building2, Wallet, Clock } from 'lucide-react';
+import {
+  Printer, Plus, CreditCard, Search, FileText,
+  RefreshCw, Layers, AlertTriangle, ChevronRight,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useUIStore, useStudentStore, useLedgerStore, useBankStore, useExpenseStore, useSettingsStore } from '@/stores';
-import { formatPKR, formatDate } from '@/lib/utils';
-import { getSubCourseDef } from '@/lib/constants';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { cn, formatPKR } from '@/lib/utils';
+import { greeting, longDate } from '@/lib/dates';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
-import { useSyncStore } from '@/stores/syncStore';
+import { computeDashboardMetrics, type AttentionItem } from '@/lib/dashboardMetrics';
+import { can } from '@/stores';
+import {
+  useUIStore, useAuthStore, useStudentStore, useLedgerStore, useBankStore,
+  useExpenseStore, useBudgetStore, useReceiptBookStore, useBatchStore, useSettingsStore,
+  useFeeTemplateStore,
+} from '@/stores';
+import { DailySummary } from '@/components/dashboard/DailySummary';
+
+/** A figure you can click. §13: "make every number clickable". */
+function StatTile({
+  label, value, hint, onClick, tone = 'ink',
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+  onClick?: () => void;
+  tone?: 'ink' | 'dues' | 'credit' | 'muted';
+}) {
+  const toneClass = {
+    ink: 'text-ink',
+    dues: 'text-dues',
+    credit: 'text-credit',
+    muted: 'text-ink-muted',
+  }[tone];
+
+  const inner = (
+    <>
+      <div className="text-micro font-medium uppercase tracking-wide text-ink-subtle">{label}</div>
+      <div className={cn('mt-1 truncate text-ui font-semibold leading-tight', toneClass)}>{value}</div>
+      {hint && <div className="mt-0.5 truncate text-micro text-ink-muted">{hint}</div>}
+    </>
+  );
+
+  if (!onClick) {
+    return <div className="min-w-0 flex-1 px-3 py-2.5">{inner}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="min-w-0 flex-1 cursor-pointer rounded-control px-3 py-2.5 text-left transition-colors duration-120 ease-standard hover:bg-accent-soft"
+    >
+      {inner}
+    </button>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-micro font-semibold uppercase tracking-widest text-ink-subtle">{children}</div>;
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const openSearch = useUIStore((s) => s.openSearch);
-  const { setSyncing, syncComplete, pendingCount } = useSyncStore();
-  const students = useStudentStore(s => s.students);
-  const ledger = useLedgerStore(s => s.transactions);
-  const bankTxs = useBankStore(s => s.transactions);
-  const expenses = useExpenseStore(s => s.expenses);
-  const showTestRecords = useSettingsStore(s => s.showTestRecords);
+  const user = useAuthStore((s) => s.user);
+  const role = user?.role;
+  const students = useStudentStore((s) => s.students);
+  const ledger = useLedgerStore((s) => s.entries);
+  const bankTxs = useBankStore((s) => s.transactions);
+  const expenses = useExpenseStore((s) => s.expenses);
+  const budgets = useBudgetStore((s) => s.budgets);
+  const books = useReceiptBookStore((s) => s.books);
+  const batches = useBatchStore((s) => s.batches);
+  const templates = useFeeTemplateStore((s) => s.templates);
+  const showTestRecords = useSettingsStore((s) => s.showTestRecords);
+  // Select primitives individually. A selector returning a fresh object literal
+  // (`{ name, address, phone }`) breaks under zustand v5 + React 19: getSnapshot
+  // is never "cached", so it re-renders in an infinite loop and the page dies.
+  const instituteName = useSettingsStore((s) => s.instituteName);
+  const instituteAddress = useSettingsStore((s) => s.instituteAddress);
+  const institutePhone = useSettingsStore((s) => s.institutePhone);
 
-  const withBalance = getStudentsWithBalanceLive(students, ledger).filter(s => showTestRecords || !s.isTestRecord);
-  const activeStudents = withBalance.filter(s => !s.struckOff).length;
-  const struckOffStudents = withBalance.filter(s => s.struckOff).length;
-  const totalDues = withBalance.filter(s => s.computedBalance > 0 && !s.struckOff).reduce((sum, s) => sum + s.computedBalance, 0);
-  const bankBalance = bankTxs.length ? bankTxs[bankTxs.length - 1].balance : 0;
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todayPayments = ledger.filter(t => t.type === 'Pay' && t.date === todayStr && t.payment > 0).map(t => {
-    const st = withBalance.find(s => s.sno === t.studentSno);
-    return { receiptNo: t.receiptNo ?? `#${t.txnNo}`, name: st?.name ?? `SNO:${t.studentSno}`, amount: t.payment };
-  });
-  const totalToday = todayPayments.reduce((sum, p) => sum + p.amount, 0);
-  const monthStr = new Date().toISOString().slice(0,7);
-  const monthlyExpense = expenses.filter(e => e.date.startsWith(monthStr)).reduce((sum, e) => sum + e.amount, 0);
+  const metrics = useMemo(() => {
+    const withBalance = getStudentsWithBalanceLive(students, ledger).filter(
+      (s) => showTestRecords || !s.isTestRecord,
+    );
+    return computeDashboardMetrics({
+      // §18 scopes the dashboard to the counter operator only: they see their own
+      // receipts and no money-in-the-bank figures. A Viewer sees every figure but
+      // gets no quick actions (handled below via the permission matrix). Which
+      // pages each role may OPEN stays governed by the one shared rule set (§3).
+      seesOwnOnly: role === 'Counter',
+      seesMoney: role !== 'Counter',
+      userName: user?.name ?? '',
+      students: withBalance,
+      ledger,
+      bank: bankTxs,
+      expenses,
+      budgets,
+      books,
+      batches,
+      templates,
+    });
+  }, [students, ledger, bankTxs, expenses, budgets, books, batches, templates, showTestRecords, role, user?.name]);
 
-  const topDefaulters = withBalance
-    .filter(s => s.computedBalance > 0 && !s.struckOff)
-    .sort((a, b) => b.computedBalance - a.computedBalance)
-    .slice(0, 5);
+  const m = metrics;
+  const canAct = can(role, 'student.admit'); // Viewer has no write capability at all (§18)
+
+  const go = (path: string) => () => navigate(path);
+
+  const quickActions: { label: string; icon: typeof Plus; perm: Parameters<typeof can>[1]; run: () => void }[] = [
+    { label: 'New admission', icon: Plus, perm: 'student.admit', run: go('/admissions/new') },
+    { label: 'Record payment', icon: CreditCard, perm: 'payment.record', run: go('/payments/record') },
+    { label: 'Search', icon: Search, perm: 'student.view', run: openSearch },
+    { label: 'Reports', icon: FileText, perm: 'reports.view', run: go('/reports') },
+    { label: 'Batch promotion', icon: RefreshCw, perm: 'ledger.adjust', run: go('/ledger/bulk-demand') },
+    { label: 'Batches', icon: Layers, perm: 'batch.manage', run: go('/batches') },
+  ];
 
   return (
-    <div className="space-y-4">
-      {/* Page Header — desktop compact */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-[18px] font-bold text-slate-900 tracking-tight">Dashboard</h1>
-        <span className="text-[11px] text-slate-500">{formatDate(new Date())}</span>
+    <>
+    <div className="print:hidden space-y-4">
+      {/* ============================================ Header (§13) */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-page font-semibold tracking-tight text-ink">
+            {greeting()}, {user?.name?.split(' ')[0] ?? 'there'}
+          </h1>
+          <p className="mt-0.5 text-meta text-ink-muted">{longDate()}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => window.print()}>
+          <Printer size={14} className="mr-1.5" />
+          Print summary
+        </Button>
       </div>
 
-      {/* Stats Cards — desktop dense 4+3 */}
-      <div className="grid grid-cols-4 gap-3">
-        <Card className="hover:shadow-sm cursor-pointer" onClick={() => navigate('/students')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 bg-blue-600 rounded-md flex items-center justify-center shrink-0">
-                <Users className="text-white" size={14} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[16px] font-bold text-slate-900 leading-none">{activeStudents}</div>
-                <div className="text-[11px] text-slate-500">Active</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-sm cursor-pointer" onClick={() => navigate('/students')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 bg-slate-800 rounded-md flex items-center justify-center shrink-0">
-                <UserX className="text-white" size={14} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[16px] font-bold text-slate-900 leading-none">{struckOffStudents}</div>
-                <div className="text-[11px] text-slate-500">Struck Off</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-sm cursor-pointer" onClick={() => navigate('/reports')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 bg-amber-500 rounded-md flex items-center justify-center shrink-0">
-                <IndianRupee className="text-white" size={14} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[13px] font-bold text-slate-900 leading-none truncate">{formatPKR(totalDues)}</div>
-                <div className="text-[11px] text-slate-500">Total Dues</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-sm cursor-pointer" onClick={() => navigate('/batches')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 bg-violet-600 rounded-md flex items-center justify-center shrink-0">
-                <RefreshCw className="text-white" size={14} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[16px] font-bold text-slate-900 leading-none">{pendingCount}</div>
-                <div className="text-[11px] text-slate-500">Pending sync</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Secondary — 3 compact */}
-      <div className="grid grid-cols-3 gap-3">
-        <Card className="cursor-pointer hover:shadow-sm" onClick={() => navigate('/bank')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-6 h-6 bg-emerald-500 rounded-md flex items-center justify-center"><Building2 className="text-white" size={12} /></div>
-              <div className="min-w-0">
-                <div className="text-[13px] font-bold text-slate-900 truncate">{formatPKR(bankBalance)}</div>
-                <div className="text-[11px] text-slate-500">Bank</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="cursor-pointer hover:shadow-sm" onClick={() => navigate('/expenses')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-6 h-6 bg-orange-500 rounded-md flex items-center justify-center"><Wallet className="text-white" size={12} /></div>
-              <div className="min-w-0">
-                <div className="text-[13px] font-bold text-slate-900 truncate">{formatPKR(monthlyExpense)}</div>
-                <div className="text-[11px] text-slate-500">Expenses {monthStr}</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="cursor-pointer hover:shadow-sm" onClick={() => navigate('/batches')}>
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-6 h-6 bg-amber-500 rounded-md flex items-center justify-center"><Clock className="text-white" size={12} /></div>
-              <div className="min-w-0">
-                <div className="text-[16px] font-bold text-slate-900 leading-none">{activeStudents + struckOffStudents}</div>
-                <div className="text-[11px] text-slate-500">Total students</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Quick Actions — desktop toolbar */}
+      {/* ============================================ TODAY (§13) */}
       <Card>
-        <CardHeader className="py-2.5">
-          <CardTitle className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Quick Actions</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between gap-3 px-4 py-2">
+          <SectionLabel>Today</SectionLabel>
+          <span className="text-micro text-ink-subtle">{longDate()}</span>
         </CardHeader>
-        <CardContent className="pt-0">
-          <div className="flex flex-wrap gap-1.5">
-            <Button size="sm" className="h-7 text-[12px]" onClick={() => navigate('/admissions/new')}>
-              <Plus size={12} className="mr-1.5" />
-              New Admission
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/payments/record')}>
-              <CreditCard size={12} className="mr-1.5" />
-              Payment
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={openSearch}>
-              <Search size={12} className="mr-1.5" />
-              Find
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/reports')}>
-              <FileText size={12} className="mr-1.5" />
-              Reports
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/ledger/bulk-demand')}>
-              <FileText size={12} className="mr-1.5" />
-              Promote Batch
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => navigate('/batches')}>
-              <Clock size={12} className="mr-1.5" />
-              Batches
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={() => { setSyncing(); setTimeout(() => syncComplete(0, 0), 1000); }}>
-              <Wifi size={12} className="mr-1.5" />
-              Sync
-            </Button>
-          </div>
+        <CardContent className="flex flex-wrap gap-x-2 p-2 pt-0">
+          <StatTile
+            label="Collected today"
+            value={formatPKR(m.collectedToday)}
+            onClick={go('/payments/reprint?date=today')}
+          />
+          <div className="h-auto w-px self-stretch bg-hairline" />
+          <StatTile
+            label="Receipts"
+            value={m.receiptsToday}
+            hint={role === 'Counter' ? 'issued by you' : undefined}
+            onClick={go('/payments/reprint?date=today')}
+          />
+          <div className="h-auto w-px self-stretch bg-hairline" />
+          <StatTile label="Cash" value={formatPKR(m.cashToday)} />
+          <div className="h-auto w-px self-stretch bg-hairline" />
+          <StatTile label="Bank / Online / Cheque" value={formatPKR(m.bankToday)} />
         </CardContent>
       </Card>
 
-      {/* Two Column — dense */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Today's Payments — live dense */}
+      {/* ============================================ Students | Fees | Money (§13) */}
+      <div className="grid gap-3 lg:grid-cols-3">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between py-2.5">
-            <CardTitle className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Today's Payments</CardTitle>
-            <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => window.print()}>Print</Button>
+          <CardHeader className="px-4 py-2">
+            <SectionLabel>Students</SectionLabel>
           </CardHeader>
-          <CardContent className="pt-0">
-            {todayPayments.length === 0 ? (
-              <div className="text-[12px] text-slate-400 py-4 text-center">No payments today — {todayStr}</div>
-            ) : (
-              <div className="space-y-0">
-                {todayPayments.map((p, i) => (
-                  <div key={i} className="flex items-center justify-between py-1.5 border-b border-slate-100 last:border-0">
-                    <div className="min-w-0">
-                      <div className="font-medium text-slate-900 text-[12px] truncate">{p.receiptNo}</div>
-                      <div className="text-[11px] text-slate-500 truncate">{p.name}</div>
-                    </div>
-                    <div className="font-semibold text-slate-900 text-[12px]">{formatPKR(p.amount)}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-center">
-              <span className="text-[11px] font-medium text-slate-500">Total Today</span>
-              <span className="font-semibold text-slate-900 text-[12px]">{formatPKR(totalToday)}</span>
-            </div>
+          <CardContent className="flex flex-col gap-0.5 p-2 pt-0">
+            <StatTile label="Active" value={m.activeCount} onClick={go('/students?status=active')} />
+            <StatTile label="Struck off" value={m.struckOffCount} tone="muted" onClick={go('/students?status=struck_off')} />
+            <StatTile label="Total" value={m.totalCount} onClick={go('/students')} />
           </CardContent>
         </Card>
 
-        {/* Fee Defaulters — dense */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between py-2.5">
-            <CardTitle className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Top Defaulters</CardTitle>
-            <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => navigate('/reports')}>
-              View All
+          <CardHeader className="px-4 py-2">
+            <SectionLabel>Fees</SectionLabel>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-0.5 p-2 pt-0">
+            <StatTile
+              label="Outstanding"
+              value={formatPKR(m.outstandingDues)}
+              tone="dues"
+              onClick={go('/students?status=dues&sort=balance')}
+            />
+            <StatTile
+              label="Credit held"
+              value={formatPKR(m.creditHeld)}
+              tone="credit"
+              onClick={go('/students?status=credit')}
+            />
+            <StatTile label="Collected this month" value={formatPKR(m.collectedThisMonth)} />
+          </CardContent>
+        </Card>
+
+        {m.bankBalance !== null && (
+          <Card>
+            <CardHeader className="px-4 py-2">
+              <SectionLabel>Money</SectionLabel>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-0.5 p-2 pt-0">
+              <StatTile label="Bank balance" value={formatPKR(m.bankBalance)} onClick={go('/bank')} />
+              <StatTile
+                label="Expenses this month"
+                value={formatPKR(m.expensesThisMonth ?? 0)}
+                onClick={go('/expenses?month=this')}
+              />
+              {m.budgetUsedPct !== null ? (
+                <StatTile label="Budget used" value={`${m.budgetUsedPct}%`} tone={m.budgetUsedPct > 100 ? 'dues' : 'ink'} />
+              ) : (
+                <StatTile label="Budget used" value="No budget set" tone="muted" />
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* ============================================ Needs attention (§17) */}
+      {m.attention.length > 0 && (
+        <Card>
+          <CardHeader className="px-4 py-2">
+            <SectionLabel>Needs attention</SectionLabel>
+          </CardHeader>
+          <CardContent className="p-2 pt-0">
+            {m.attention.map((a) => (
+              <AttentionRow key={a.id} item={a} onOpen={go(a.href)} />
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ============================================ Defaulters | Today's payments (§13) */}
+      <div className="grid gap-3 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 px-4 py-2">
+            <SectionLabel>Top defaulters (active)</SectionLabel>
+            <Button variant="ghost" size="sm" onClick={go('/students?status=dues&sort=balance')}>
+              View all
+              <ChevronRight size={14} className="ml-1" />
             </Button>
           </CardHeader>
-          <CardContent className="pt-0">
-            <div className="space-y-0">
-              {topDefaulters.map((s) => (
-                <div key={s.sno} className="flex items-center justify-between py-1.5 border-b border-slate-100 last:border-0">
-                  <div className="min-w-0">
-                    <div className="font-medium text-slate-900 text-[12px] truncate">{s.name}</div>
-                    <div className="text-[11px] text-slate-500 truncate">
-                      SNO:{s.sno} · {getSubCourseDef(s.program).sub.label}
-                    </div>
-                  </div>
-                  <div className="text-amber-600 font-semibold text-[12px]">
-                    {formatPKR(s.computedBalance)}
-                  </div>
+          <CardContent className="p-2 pt-0">
+            {m.topDefaulters.length === 0 ? (
+              <EmptyRow>No active student has dues right now.</EmptyRow>
+            ) : (
+              m.topDefaulters.map((s) => (
+                <button
+                  key={s.sno}
+                  type="button"
+                  onClick={go(`/ledger/${s.sno}`)}
+                  className="flex w-full items-center justify-between gap-3 rounded-control px-2 py-1.5 text-left transition-colors duration-120 ease-standard hover:bg-accent-soft"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-body font-medium text-ink">{s.name}</span>
+                    <span className="block truncate text-micro text-ink-muted">
+                      SNO:{s.sno} · {s.batch} · {s.semester} term
+                    </span>
+                  </span>
+                  <span className="flex-none text-body font-semibold text-dues">{formatPKR(s.computedBalance)}</span>
+                </button>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 px-4 py-2">
+            <SectionLabel>Today&apos;s payments</SectionLabel>
+            <Button variant="ghost" size="sm" onClick={go('/payments/reprint?date=today')}>
+              Receipts
+              <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </CardHeader>
+          <CardContent className="p-2 pt-0">
+            {m.todayReceipts.length === 0 ? (
+              <EmptyRow>Nothing collected today.</EmptyRow>
+            ) : (
+              m.todayReceipts.map((r, i) => (
+                <div key={i} className="flex items-center justify-between gap-3 px-2 py-1.5">
+                  <span className="min-w-0">
+                    <span className="block truncate text-body font-medium text-ink">{r.name}</span>
+                    <span className="block truncate text-micro text-ink-muted">
+                      R-{r.receiptNo}{r.mode ? ` · ${r.mode}` : ''}
+                    </span>
+                  </span>
+                  <span className="flex-none text-body font-semibold text-ink">{formatPKR(r.amount)}</span>
                 </div>
-              ))}
-              {topDefaulters.length === 0 && <div className="text-[12px] text-slate-400 py-4 text-center">No defaulters</div>}
-            </div>
+              ))
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Footer note — compact */}
-      <div className="text-[11px] text-slate-400 bg-slate-50 px-3 py-1.5 rounded-md border border-slate-200">
-        Live from ledger — Dues column is legacy cache.
-      </div>
+      {/* ============================================ Quick actions (§13/§18) */}
+      {canAct && (
+        <Card>
+          <CardHeader className="px-4 py-2">
+            <SectionLabel>Quick actions</SectionLabel>
+          </CardHeader>
+          <CardContent className="p-3 pt-0">
+            <div className="flex flex-wrap gap-1.5">
+              {quickActions.filter((a) => can(role, a.perm)).map(({ label, icon: Icon, run }) => (
+                <Button key={label} variant="outline" size="sm" onClick={run}>
+                  <Icon size={14} className="mr-1.5" />
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+
+      {/* §19 — the printout is a purpose-built sheet, never a screenshot of the
+          screen above. It must be a SIBLING of the print:hidden wrapper: an
+          ancestor's display:none suppresses even a `print:block` descendant. */}
+      <DailySummary
+        metrics={m}
+        institute={{ name: instituteName, address: instituteAddress, phone: institutePhone }}
+        printedBy={user?.name ?? 'Unknown'}
+        role={role ?? 'Unknown'}
+      />
+    </>
+  );
+}
+
+function AttentionRow({ item, onOpen }: { item: AttentionItem; onOpen: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-control px-2 py-1.5 hover:bg-hairline-soft">
+      <span className="flex min-w-0 items-center gap-2">
+        <AlertTriangle size={14} className="flex-none text-dues" />
+        <Badge variant="outline" className="flex-none">
+          {item.count}
+        </Badge>
+        <span className="truncate text-body text-ink-secondary">{item.label}</span>
+      </span>
+      <Button variant="subtle" size="sm" className="flex-none" onClick={onOpen}>
+        {item.action}
+      </Button>
     </div>
   );
+}
+
+function EmptyRow({ children }: { children: React.ReactNode }) {
+  return <div className="px-2 py-4 text-center text-meta text-ink-subtle">{children}</div>;
 }

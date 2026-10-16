@@ -1,64 +1,40 @@
 // ============================================
-// MediCMS Desktop v4.0 - Live Balance (single source of truth)
-// Balance is ALWAYS derived from ledger transactions, never from
-// a stored/static "Dues" column or MOCK_BALANCES dict.
-// Formula: balance = Σ(fees) + Σ(charges) - Σ(discounts) - Σ(payments)
-// Charges are stored as negative discount in Exam/CT transactions.
+// MediCMS Desktop v4.0 — Balance for the screens (app adapter)
+//
+// All the arithmetic lives in src/lib/ledger: the balance is derived from typed
+// entries there (§4, §6) and never from a stored number. This file adds the one
+// thing a screen needs on top of it — a student list with its balance and badge —
+// and keeps the import path the twelve list screens already use.
 // ============================================
 
-import type { LedgerTransaction, Student, StudentWithBalance } from '@/types';
+import type { LedgerEntry, Student, StudentWithBalance } from '@/types';
+import { computeEntryBalance } from '@/lib/ledger';
 import { getStudentBadge } from '@/lib/utils';
 
-export interface LedgerBalanceBreakdown {
-  totalDemanded: number;
-  totalCharges: number;
-  totalDiscount: number;
-  totalPaid: number;
-  balance: number;
-}
-
-export function computeLedgerBalance(txns: LedgerTransaction[]): LedgerBalanceBreakdown {
-  let totalDemanded = 0;
-  let totalCharges = 0;
-  let totalDiscount = 0;
-  let totalPaid = 0;
-  for (const t of txns) {
-    totalDemanded += t.fees;
-    if (t.discount < 0) totalCharges += Math.abs(t.discount);
-    else totalDiscount += t.discount;
-    totalPaid += t.payment;
-  }
-  return {
-    totalDemanded,
-    totalCharges,
-    totalDiscount,
-    totalPaid,
-    balance: totalDemanded + totalCharges - totalDiscount - totalPaid,
-  };
-}
-
-export function getLiveBalance(sno: number, transactions: LedgerTransaction[]): number {
-  return computeLedgerBalance(transactions.filter((t) => t.studentSno === sno)).balance;
-}
-
-export function getBalanceBreakdown(sno: number, transactions: LedgerTransaction[]): LedgerBalanceBreakdown {
-  return computeLedgerBalance(transactions.filter((t) => t.studentSno === sno));
-}
-
-/** Live replacement for mockData.getStudentsWithBalance — pass live ledger txns. */
+/**
+ * The only balance helper screens should use: pass the students and the ledger's
+ * entries, and every row comes back with the balance derived from those entries.
+ *
+ * One pass groups the entries by student, so a list of n students and m entries
+ * costs O(n + m) rather than O(n * m).
+ */
 export function getStudentsWithBalanceLive(
-  students: Student[],
-  transactions: LedgerTransaction[]
+  students: readonly Student[],
+  entries: readonly LedgerEntry[],
 ): StudentWithBalance[] {
-  // Group balances in one pass (O(n+m) instead of O(n*m))
-  const bySno = new Map<number, LedgerTransaction[]>();
-  for (const t of transactions) {
-    const arr = bySno.get(t.studentSno);
-    if (arr) arr.push(t);
-    else bySno.set(t.studentSno, [t]);
+  const bySno = new Map<number, LedgerEntry[]>();
+  for (const entry of entries) {
+    const list = bySno.get(entry.studentSno);
+    if (list) list.push(entry);
+    else bySno.set(entry.studentSno, [entry]);
   }
+
   return students.map((student) => {
-    const balance = computeLedgerBalance(bySno.get(student.sno) ?? []).balance;
-    return { ...student, computedBalance: balance, badge: getStudentBadge(student.struckOff, balance) };
+    const balance = computeEntryBalance(bySno.get(student.sno) ?? []).balance;
+    return {
+      ...student,
+      computedBalance: balance,
+      badge: getStudentBadge(student.struckOff, balance),
+    };
   });
 }

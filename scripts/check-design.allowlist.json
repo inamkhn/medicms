@@ -1,0 +1,66 @@
+{
+  "src/components/layout/Header.tsx": {
+    "arbitrary-size": 7
+  },
+  "src/components/layout/Sidebar.tsx": {
+    "hex": 1,
+    "arbitrary-size": 8
+  },
+  "src/components/layout/StatusBar.tsx": {
+    "arbitrary-size": 1
+  },
+  "src/components/receipts/ReceiptDoc.tsx": {
+    "arbitrary-size": 8
+  },
+  "src/components/shared/GlobalSearch.tsx": {
+    "hex": 1,
+    "arbitrary-size": 13,
+    "handrolled-modal": 1
+  },
+  "src/components/shared/StruckOffModal.tsx": {
+    "handrolled-modal": 1
+  },
+  "src/components/students/StudentIdCard.tsx": {
+    "hex": 1
+  },
+  "src/components/students/StudentStatusBadge.tsx": {
+    "hex": 6,
+    "arbitrary-size": 1
+  },
+  "src/pages/audit/AuditTrail.tsx": {
+    "arbitrary-size": 3
+  },
+  "src/pages/ledger/AddCharge.tsx": {
+    "hex": 2,
+    "arbitrary-size": 2
+  },
+  "src/pages/ledger/LedgerAdjustment.tsx": {
+    "hex": 2,
+    "arbitrary-size": 1
+  },
+  "src/pages/ledger/LedgerHub.tsx": {
+    "arbitrary-size": 6
+  },
+  "src/pages/payments/RecordPayment.tsx": {
+    "arbitrary-size": 2
+  },
+  "src/pages/Reports.tsx": {
+    "arbitrary-size": 5
+  },
+  "src/pages/Settings.tsx": {
+    "native-dialog": 3
+  },
+  "src/pages/students/EditStudent.tsx": {
+    "arbitrary-size": 1,
+    "native-dialog": 2
+  },
+  "src/pages/students/NewAdmission.tsx": {
+    "hex": 4,
+    "arbitrary-size": 4,
+    "native-dialog": 3
+  },
+  "src/pages/students/StudentList.tsx": {
+    "arbitrary-size": 19,
+    "handrolled-modal": 1
+  }
+}

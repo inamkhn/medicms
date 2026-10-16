@@ -51,7 +51,7 @@ export function ReceiptDoc(props: ReceiptDocProps) {
           {programLabel && <div>{programLabel}{batchLabel ? ` · ${batchLabel}` : ''}{sessionLabel ? ` · ${sessionLabel}` : ''}</div>}
           {demandTotal !== undefined && <div>Demand: {formatPKR(demandTotal)}</div>}
           <div>Paid: {formatPKR(payment)}</div>
-          {discount > 0 && <div>Discount: {formatPKR(discount)}{discountReason ? ` (${discountReason})` : ''}</div>}
+          {discount > 0 && <div>Concession: {formatPKR(discount)}{discountReason ? ` (${discountReason})` : ''}</div>}
           {mode && <div>Mode: {mode}{bankRef ? ` · ${bankRef}` : ''}</div>}
           {prevBalance !== undefined && <div>Prev bal: {formatPKR(prevBalance)}</div>}
           {newBalance !== undefined && <div className="font-bold">Balance: {formatPKR(newBalance)}</div>}
@@ -85,7 +85,7 @@ export function ReceiptDoc(props: ReceiptDocProps) {
         {demandTotal !== undefined && <div className="flex justify-between"><span className="text-slate-500">Sem demand</span><span>{formatPKR(demandTotal)}</span></div>}
         {prevBalance !== undefined && <div className="flex justify-between"><span className="text-slate-500">Previous balance</span><span>{formatPKR(prevBalance)}</span></div>}
         <div className="flex justify-between"><span className="text-slate-500">Amount paid</span><span className="font-bold">{formatPKR(payment)}</span></div>
-        {discount > 0 && <div className="flex justify-between"><span className="text-slate-500">Discount</span><span>{formatPKR(discount)}{discountReason ? ` — ${discountReason}` : ''}</span></div>}
+        {discount > 0 && <div className="flex justify-between"><span className="text-slate-500">Concession</span><span>{formatPKR(discount)}{discountReason ? ` — ${discountReason}` : ''}</span></div>}
         {mode && <div className="flex justify-between"><span className="text-slate-500">Mode</span><span>{mode}{bankRef ? ` · Ref ${bankRef}` : ''}</span></div>}
         {newBalance !== undefined && <div className="flex justify-between pt-2 border-t"><span className="text-slate-500">New balance</span><span className="font-bold">{formatPKR(newBalance)}</span></div>}
       </div>

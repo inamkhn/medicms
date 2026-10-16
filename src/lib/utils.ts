@@ -3,12 +3,82 @@
 // ============================================
 
 import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { extendTailwindMerge } from 'tailwind-merge';
 import { format } from 'date-fns';
-import type { StudentBadgeType, BalanceState, CourseCode } from '@/types';
-import { getCourseDef } from '@/lib/constants';
+import type { StudentBadgeType, BalanceState } from '@/types';
 
 // --- Class name utility ---
+
+/**
+ * The token scale, declared once in src/index.css and registered here so
+ * tailwind-merge recognises it.
+ *
+ * This is not optional convenience. tailwind-merge resolves conflicts by matching a
+ * class against a known group; an unrecognised name such as `text-section` is passed
+ * through untouched, so `<CardTitle className="text-base">` would emit BOTH
+ * `text-section` and `text-base` and leave the winner to CSS source order instead of
+ * letting the caller override the primitive. Pages override primitives constantly
+ * (`h-7`, `text-[11px]`, `border-blue-100`), so re-tokening the primitives without
+ * registering these names would silently break every one of those overrides.
+ */
+const TOKEN_COLORS = [
+  'brand-50', 'brand-100', 'brand-200', 'brand-300', 'brand-400', 'brand-500', 'brand-600', 'brand-700', 'brand-800',
+  'accent', 'accent-hover', 'accent-soft',
+  'cleared', 'cleared-soft', 'dues', 'dues-soft', 'struckoff', 'struckoff-soft', 'credit', 'credit-soft',
+  'danger', 'danger-hover', 'danger-soft',
+  'ink', 'ink-secondary', 'ink-muted', 'ink-subtle',
+  'hairline', 'hairline-soft', 'hairline-strong',
+  'surface', 'surface-sunken', 'panel',
+] as const;
+
+const TOKEN_FONT_SIZES = ['micro', 'meta', 'body', 'ui', 'section', 'title', 'page', 'stat'] as const;
+
+/**
+ * The named animations and the one easing, both declared in src/index.css
+ * (@utility animate-* / --ease-standard). Registered for the same reason as the
+ * colours: a page that writes `animate-none` over a primitive's `animate-panel-in`
+ * has to win by merge, not by CSS source order.
+ */
+const TOKEN_ANIMATIONS = [
+  'panel-in',
+  'panel-out',
+  'overlay-in',
+  'overlay-out',
+  'toast-in',
+  'toast-out',
+] as const;
+
+const twMerge = extendTailwindMerge({
+  extend: {
+    classGroups: {
+      // font-size and text-color share the `text-` prefix; the explicit name lists keep
+      // them unambiguous (there is no colour called `body`, no size called `panel`).
+      'font-size': [{ text: [...TOKEN_FONT_SIZES] }],
+      'text-color': [{ text: [...TOKEN_COLORS] }],
+      'bg-color': [{ bg: [...TOKEN_COLORS] }],
+      'border-color': [{ border: [...TOKEN_COLORS] }],
+      'ring-color': [{ ring: [...TOKEN_COLORS] }],
+      'placeholder-color': [{ placeholder: [...TOKEN_COLORS] }],
+      'outline-color': [{ outline: [...TOKEN_COLORS] }],
+      rounded: [{ rounded: ['control', 'card', 'pill'] }],
+      shadow: [{ shadow: ['card', 'raised', 'overlay'] }],
+      z: [{ z: ['dropdown', 'sticky', 'overlay', 'modal', 'toast', 'tooltip'] }],
+      // Group ids here are tailwind-merge's own, not invented: `animate` and `ease`
+      // (not `animation`/`timing`) — a wrong id creates a second, empty group and the
+      // config still type-checks, so the only proof is asserting the merge outcome.
+      animate: [{ animate: [...TOKEN_ANIMATIONS] }],
+      ease: [{ ease: ['standard'] }],
+      // The px-pinned control heights (index.css @utility) must join tailwind-merge's
+      // own height group, and must be written as `{ h: [...] }` — the object form is
+      // what means "classes prefixed with h-". A bare `'control-md'` registers the
+      // literal class `control-md`, which matches nothing, so the group silently does
+      // nothing. Verified: 'h-control-md h-7' → 'h-7', so the ~24 page-level height
+      // overrides keep working after primitives switch to h-control-*.
+      h: [{ h: ['control-sm', 'control-md', 'control-lg', 'row'] }],
+    },
+  },
+});
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -49,14 +119,21 @@ export function getStudentBadge(struckOff: boolean, balance: number): StudentBad
   return 'active';
 }
 
+/**
+ * The one way this app says "what does this balance mean" (P3, P9). Call sites
+ * must apply `.color` verbatim rather than re-deriving amber/green/blue.
+ * dues / cleared / credit are the three reserved money states — note credit is
+ * violet, deliberately not the brand blue, so a money state is never identical
+ * to the interactive colour. Label wording moves to the Money pattern in Phase 4.
+ */
 export function formatBalanceDisplay(balance: number): { label: string; color: string } {
   if (balance > 0) {
-    return { label: `⚠ PKR ${balance.toLocaleString()} due`, color: 'text-amber-600' };
+    return { label: `⚠ PKR ${balance.toLocaleString()} due`, color: 'text-dues' };
   }
   if (balance === 0) {
-    return { label: '✅ Cleared', color: 'text-green-600' };
+    return { label: '✅ Cleared', color: 'text-cleared' };
   }
-  return { label: `✅ Credit PKR ${Math.abs(balance).toLocaleString()}`, color: 'text-blue-600' };
+  return { label: `✅ Credit PKR ${Math.abs(balance).toLocaleString()}`, color: 'text-credit' };
 }
 
 // --- CNIC formatting ---
@@ -137,47 +214,9 @@ export function generateReceiptNumber(_block: { start: number; end: number }, cu
 }
 
 // --- Fee template total (always computed) ---
-export function computeFeeTemplateTotal(template: {
-  admissionFee: number;
-  tuitionFee: number;
-  idCardFee: number;
-  annualCharges: number;
-  securityFee: number;
-  enrollmentFee: number;
-  diplomaFee: number;
-  clinicalCharges: number;
-}): number {
-  return (
-    template.admissionFee +
-    template.tuitionFee +
-    template.idCardFee +
-    template.annualCharges +
-    template.securityFee +
-    template.enrollmentFee +
-    template.diplomaFee +
-    template.clinicalCharges
-  );
-}
-
-// --- Fee semester warnings ---
-export function getFeeWarnings(semester: string, feeType: string, amount: number, course?: CourseCode): string | null {
-  if (amount === 0) return null;
-  // Paramedics business rules only apply to semester-system courses
-  if (course && getCourseDef(course).system !== 'semester') return null;
-  
-  const semNum = parseInt(semester, 10);
-  
-  if (feeType === 'annualCharges' && semNum < 3) {
-    return '⚠ Annual Charges usually 0 in Sem 1 & 2 — confirm';
-  }
-  if (feeType === 'clinicalCharges' && semNum !== 3) {
-    return '⚠ Clinical Charges confirmed only in Sem 3 — confirm';
-  }
-  if (feeType === 'diplomaFee' && semNum < 4) {
-    return '⚠ Diploma Fee usually only in Sem 4 — confirm';
-  }
-  return null;
-}
+// Removed with the eight-head table: a template's term figures are computed by
+// src/lib/fee/termFees from its components, and lib/fee/templateCompat projects the
+// legacy heads from that. Two totals in two places was the bug this closes.
 
 // --- Search highlight ---
 export function highlightMatch(text: string, query: string): string {

@@ -17,20 +17,25 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { getSubCourseDef, SESSION_OPTIONS } from '@/lib/constants';
-import { formatPKR, getFeeWarnings, getTermLabel } from '@/lib/utils';
-import { splitFee, getPromotionFee } from '@/lib/promotion';
+import { formatPKR, getTermLabel } from '@/lib/utils';
+import { todayISO } from '@/lib/txn';
+import { getPromotionFee, termIndexOf } from '@/lib/promotion';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
-import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
-import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
-import type { Semester, LedgerTransaction } from '@/types';
+import { HEAD_KEYS, HEAD_LABELS, OTHER_FEES_LABEL, termHeadsOf, templateTotalOf } from '@/lib/fee/templateCompat';
+import { entryProblems, feeChargeEntry, postingBlocker } from '@/lib/ledger';
+import { toastSuccess } from '@/lib/toast';
+import { useStudentStore, useLedgerStore, useAuditStore, useAuthStore, useFeeTemplateStore } from '@/stores';
+import type { Semester } from '@/types';
 
 export default function AddFeeDemand() {
   const { sno } = useParams<{ sno: string }>();
   const navigate = useNavigate();
 
   const students = useStudentStore((s) => s.students);
-  const ledgerTxns = useLedgerStore((s) => s.transactions);
-  const student = getStudentsWithBalanceLive(students, ledgerTxns).find(s => s.sno.toString() === sno);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
+  const templates = useFeeTemplateStore((s) => s.templates);
+  const findActive = useFeeTemplateStore((s) => s.findActive);
+  const student = getStudentsWithBalanceLive(students, ledgerEntries).find(s => s.sno.toString() === sno);
 
   // Course system of the student's sub-course
   const subDef = student ? getSubCourseDef(student.program) : null;
@@ -38,75 +43,86 @@ export default function AddFeeDemand() {
     ? (subDef.course.system === 'annual' ? 'Year' : subDef.course.system === 'months' ? 'Term' : 'Semester')
     : 'Semester';
 
+  // Term auto-derived from current semester (spec §3.2); correction toggle unlocks it.
   const [semester, setSemester] = useState<Semester>(() => {
     if (subDef && student && subDef.sub.terms.includes(student.semester)) return student.semester;
     return subDef?.sub.terms[0] ?? '1st';
   });
+  const [termUnlocked, setTermUnlocked] = useState(false);
   const [session, setSession] = useState(() => String(student?.session ?? new Date().getFullYear()));
   const [narration, setNarration] = useState('This is Next Promote Semester Fees');
   const [updateSemester, setUpdateSemester] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Concurrent-edit guard (§5): snapshot ledger size at open.
+  const [openCount] = useState(() => useLedgerStore.getState().entries.filter(e => e.studentSno === Number(sno)).length);
 
   if (!student) {
     return <div className="p-8 text-center text-slate-400">Student not found (SNO: {sno})</div>;
   }
 
-  // Find matching template; fall back to locked admission fee
-  const template = MOCK_FEE_TEMPLATES.find(
-    t => t.program === student.program && t.course === student.course && t.semester === semester
-  );
+  // The Active template for this student's placement; fall back to their locked fee
+  const template = findActive(student);
+  const term = termIndexOf(semester);
+  const heads = template ? termHeadsOf(template, term) : null;
 
-  const templateSplit = template ? splitFee(template) : { full: 0, recurring: 0, oneTime: 0 };
-  const lockedFee = getPromotionFee(student);
-  // First term bills the full fee (one-time + recurring); later terms bill
-  // recurring only — re-charging the admission fee would be an overcharge.
-  const isFirstTerm = subDef ? subDef.sub.terms[0] === semester : semester === '1st';
-  const total = template ? (isFirstTerm ? templateSplit.full : templateSplit.recurring) : lockedFee;
+  const lockedFee = getPromotionFee(student, templates);
+  // What this term bills comes from the engine, not from adding heads up: a later
+  // term simply carries no admission-only components, because those are charged
+  // "At admission" (§5.3). No isFirstTerm special case is needed any more.
+  const total = template ? templateTotalOf(template, term) : lockedFee;
 
-  // Collect warnings
+  // Warnings: a term that bills nothing is almost always a template mistake, and the
+  // operator is about to post it, so say so (§19).
   const warnings: string[] = [];
-  if (template) {
-    const w1 = getFeeWarnings(semester, 'annualCharges', template.annualCharges, student.course);
-    const w2 = getFeeWarnings(semester, 'clinicalCharges', template.clinicalCharges, student.course);
-    const w3 = getFeeWarnings(semester, 'diplomaFee', template.diplomaFee, student.course);
-    if (w1) warnings.push(w1);
-    if (w2) warnings.push(w2);
-    if (w3) warnings.push(w3);
+  if (template && total === 0) {
+    warnings.push(
+      `\u26A0 ${subDef ? getTermLabel(subDef.course.system, semester) : semester} carries no charge in "${template.name}" v${template.version} \u2014 check the components' term ranges before posting.`,
+    );
   }
 
   const handleSubmit = async () => {
     setError('');
     if (!template && lockedFee <= 0) { setError('No fee template or locked admission fee found for this semester — cannot create demand.'); return; }
-    const allTx = useLedgerStore.getState().transactions;
-    const duplicate = allTx.some(t => t.studentSno === student.sno && t.type === 'Demand' && t.semester === semester && String(t.session) === String(session));
-    if (duplicate) { setError(`Demand already exists for ${getTermLabel(subDef?.course.system ?? 'semester', semester)} — Session ${session}.`); return; }
+    const all = useLedgerStore.getState().entries;
+    if (all.filter(e => e.studentSno === student.sno).length !== openCount) {
+      setError("This student's ledger has changed since you opened this page — go back, refresh and review before posting.");
+      return;
+    }
+    // §7.6: a struck-off student is not billed a new fee charge.
+    const blocker = postingBlocker('FeeCharge', { struckOff: student.struckOff, completed: false });
+    if (blocker) { setError(blocker); return; }
+    const termLabel = getTermLabel(subDef?.course.system ?? 'semester', semester);
+    // One fee charge per student per term (§5). The entry carries a term, not a
+    // session, so the duplicate check is about the term the money is for.
+    const duplicate = all.some(e => e.studentSno === student.sno && e.type === 'FeeCharge' && e.term === term);
+    if (duplicate) { setError(`${termLabel} is already billed for this student — a second charge for the same term would bill it twice.`); return; }
     setLoading(true);
-    const nextTxn = getNextTxnNo(allTx, student.sno);
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
-    const tx: LedgerTransaction = {
-      id: `tx-${student.sno}-${nextTxn}-${Date.now()}`,
+    const date = todayISO();
+    const entry = feeChargeEntry({
       studentSno: student.sno,
-      txnNo: nextTxn,
-      date: new Date().toISOString().split('T')[0],
-      type: 'Demand',
-      semester,
-      session: parseInt(session, 10) || undefined,
-      fees: total,
-      discount: 0,
-      payment: 0,
-      receiptNo: null,
-      receivedBy: null,
-      narration,
-      createdAt: new Date().toISOString(),
+      entryNo: useLedgerStore.getState().nextEntryNo(student.sno),
+      term,
+      amount: total,
+      template: template ?? null,
+      date,
       createdBy: userName,
-      synced: false,
-    };
-    useLedgerStore.getState().addTransaction(tx);
+      description: narration.trim() || `${termLabel} fee charge — Session ${session}`,
+    });
+    const problems = entryProblems(entry, { today: date, all: [...all, entry] });
+    if (problems.length) { setError(problems.join(' ')); setLoading(false); return; }
+    const outcome = useLedgerStore.getState().postEntries([entry], date);
+    if (!outcome.ok) {
+      setError(outcome.rejected.flatMap(r => r.problems).join(' '));
+      setLoading(false);
+      return;
+    }
     if (updateSemester) useStudentStore.getState().updateStudent(student.sno, { semester });
-    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', studentSno: student.sno, details: `${getTermLabel(subDef?.course.system ?? 'semester', semester)} · Session ${session} · ${formatPKR(total)}${narration ? ` — ${narration}` : ''}` });
+    useAuditStore.getState().addLog({ user: userName, action: 'Fee Demand', studentSno: student.sno, details: `${termLabel} · Session ${session} · ${formatPKR(total)}${narration ? ` — ${narration}` : ''}` });
+    toastSuccess({ title: `${termLabel} billed`, description: `${formatPKR(total)} charged to ${student.name} (entry #${entry.entryNo}).` });
     setLoading(false);
-    navigate(`/ledger/${student.sno}`);
+    navigate(`/ledger/${student.sno}?highlight=${entry.id}`);
   };
 
   return (
@@ -128,7 +144,7 @@ export default function AddFeeDemand() {
         Normal semester billing uses <button className="underline font-medium" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>Promote to Next Semester</button> (advances term + bills recurring fee). Use this page only to correct a missed or wrong demand.
       </div>
 
-      {/* Term & Session */}
+      {/* Term & Session — term auto-derived, correction toggle unlocks */}
       <Card>
         <CardHeader>
           <CardTitle>{termNoun} & Session</CardTitle>
@@ -136,19 +152,31 @@ export default function AddFeeDemand() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label>{termNoun}</Label>
-              <Select value={semester} onValueChange={(v) => setSemester(v as Semester)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {subDef?.sub.terms.map(s => (
-                    <SelectItem key={s} value={s}>
-                      {subDef ? getTermLabel(subDef.course.system, s) : s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>{termNoun} (auto — current term)</Label>
+              {termUnlocked ? (
+                <Select value={semester} onValueChange={(v) => setSemester(v as Semester)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {subDef?.sub.terms.map(s => (
+                      <SelectItem key={s} value={s}>
+                        {subDef ? getTermLabel(subDef.course.system, s) : s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                    {subDef ? getTermLabel(subDef.course.system, semester) : semester}
+                  </div>
+                </div>
+              )}
+              <label className="flex items-center gap-2 mt-2 cursor-pointer text-xs text-slate-500">
+                <input type="checkbox" checked={termUnlocked} onChange={(e) => setTermUnlocked(e.target.checked)} className="w-3.5 h-3.5 accent-blue-600" />
+                Change term (correction only — normal term changes use Promote)
+              </label>
             </div>
             <div>
               <Label>Session</Label>
@@ -161,72 +189,41 @@ export default function AddFeeDemand() {
 
           {template && (
             <div className="text-sm text-blue-600 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-              Template loaded: {subDef ? subDef.sub.label : student.program} · {subDef ? getTermLabel(subDef.course.system, semester) : semester} · {student.batch}
+              Template loaded: {template.name} v{template.version} · {subDef ? getTermLabel(subDef.course.system, semester) : semester} · {student.batch}
               <div className="mt-1 text-xs">
-                {isFirstTerm
-                  ? `First term — full fee incl. one-time heads (${formatPKR(templateSplit.oneTime)}) + recurring (${formatPKR(templateSplit.recurring)}).`
-                  : `Later term — recurring only (${formatPKR(templateSplit.recurring)}). One-time heads (${formatPKR(templateSplit.oneTime)}) excluded to avoid re-charging admission fee.`}
+                {`Charged ${formatPKR(total)} from ${template.components.length} component(s). Terms that do not fall due this term are left out by the template itself, not by this screen.`}
               </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Fee Breakdown */}
+      {/* Fee Breakdown — shared receipt-style table; N/A lines show as — */}
       <Card>
         <CardHeader>
           <CardTitle>Fee Breakdown</CardTitle>
         </CardHeader>
         <CardContent>
-          {template ? (
+          {template && heads ? (
             <div className="space-y-2 text-sm">
-              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
-                <span>Admission Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
-                <span>{formatPKR(template.admissionFee)}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Tuition Fee</span>
-                <span>{formatPKR(template.tuitionFee)}</span>
-              </div>
-              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
-                <span>ID Card Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
-                <span>{formatPKR(template.idCardFee)}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Annual Charges</span>
-                <div className="flex items-center gap-2">
-                  <span>{formatPKR(template.annualCharges)}</span>
-                  {template.annualCharges > 0 && subDef?.course.system === 'semester' && (
-                    <span className="text-xs text-blue-500">✓ Sem 3+</span>
-                  )}
-                </div>
-              </div>
-              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
-                <span>Security Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
-                <span className="text-slate-400">{formatPKR(template.securityFee)}</span>
-              </div>
-              <div className={`flex justify-between py-1.5 border-b border-slate-100 ${!isFirstTerm ? 'opacity-40' : ''}`}>
-                <span>Enrollment Fee {!isFirstTerm && <span className="text-xs text-slate-400">(excluded — one-time)</span>}</span>
-                <span>{formatPKR(template.enrollmentFee)}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Diploma Fee</span>
-                <span className="text-slate-400">{formatPKR(template.diplomaFee)}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100">
-                <span>Clinical Charges</span>
-                <div className="flex items-center gap-2">
-                  <span>{formatPKR(template.clinicalCharges)}</span>
-                  {template.clinicalCharges > 0 && subDef?.course.system === 'semester' && (
-                    <span className="text-xs text-blue-500">✓ Sem 3</span>
-                  )}
-                </div>
-              </div>
+              {HEAD_KEYS.map((key) => (
+                <BreakdownLine key={key} label={HEAD_LABELS[key]} amount={heads[key]} na={heads[key] === 0} />
+              ))}
+              {heads.otherFees > 0 && <BreakdownLine label={OTHER_FEES_LABEL} amount={heads.otherFees} />}
               <div className="flex justify-between font-bold pt-3 border-t border-slate-100">
                 <span>TOTAL DEMAND</span>
-                <span>{formatPKR(total)}</span>
+                <span className="tabular-nums">{formatPKR(total)}</span>
               </div>
-              <div className="text-xs text-slate-400 mt-1">Computed — not stored in DB</div>
+              <div className="text-xs text-slate-400 mt-1">Computed from the template's components — not stored in DB</div>
+            </div>
+          ) : lockedFee > 0 ? (
+            <div className="text-sm">
+              <div className="flex items-baseline gap-2">
+                <span>Locked admission rate</span>
+                <span className="flex-1 border-b border-dotted border-slate-300" />
+                <span className="tabular-nums font-semibold">{formatPKR(lockedFee)}</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-2">No template for this term — using the student's locked fee.</p>
             </div>
           ) : (
             <div className="text-center text-slate-400 py-6 text-sm">
@@ -297,9 +294,21 @@ export default function AddFeeDemand() {
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
         <Button onClick={handleSubmit} disabled={loading || total <= 0}>
-          {loading ? 'Adding...' : 'Add Demand to Ledger'}
+          {loading ? 'Posting...' : `Post Demand ${formatPKR(total)}`}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function BreakdownLine({ label, amount, na }: {
+  label: string; amount: number; na?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline gap-2 py-1.5 border-b border-slate-100">
+      <span>{label}</span>
+      <span className="flex-1 border-b border-dotted border-slate-300" />
+      <span className="tabular-nums">{na ? '—' : formatPKR(amount)}</span>
     </div>
   );
 }

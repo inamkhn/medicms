@@ -11,23 +11,33 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CHARGE_TYPES } from '@/lib/constants';
 import { formatPKR } from '@/lib/utils';
-import { getStudentsWithBalanceLive, getLiveBalance } from '@/lib/balance';
-import { useStudentStore, useLedgerStore, getNextTxnNo, useAuditStore, useAuthStore } from '@/stores';
-import type { LedgerTransaction, TransactionType } from '@/types';
+import { nowISO, todayISO } from '@/lib/txn';
+import { addDays } from '@/lib/dates';
+import { getStudentsWithBalanceLive } from '@/lib/balance';
+import { DEFAULT_TERM_DUE_DAYS, entryId, entryProblems, postingBlocker } from '@/lib/ledger';
+import { toastSuccess } from '@/lib/toast';
+import { useStudentStore, useLedgerStore, useAuditStore, useAuthStore } from '@/stores';
+import { SignedAmount } from '@/components/ledger/SignedAmount';
+import type { LedgerEntry } from '@/types';
 
 export default function AddCharge() {
   const { sno } = useParams<{ sno: string }>();
   const navigate = useNavigate();
 
   const storeStudents = useStudentStore(s => s.students);
-  const ledgerTxns = useLedgerStore(s => s.transactions);
-  const student = getStudentsWithBalanceLive(storeStudents, ledgerTxns).find(s => s.sno.toString() === sno);
+  const ledgerEntries = useLedgerStore(s => s.entries);
+  const student = getStudentsWithBalanceLive(storeStudents, ledgerEntries).find(s => s.sno.toString() === sno);
   const [chargeType, setChargeType] = useState<string>(CHARGE_TYPES[0].value);
   const [amount, setAmount] = useState('2700');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(todayISO);
+  // A charge without a due date cannot be chased (§24.1), so the screen starts one and
+  // re-bases it when the posting day moves.
+  const [dueDate, setDueDate] = useState(() => addDays(todayISO(), DEFAULT_TERM_DUE_DAYS));
   const [narration, setNarration] = useState<string>(CHARGE_TYPES[0].defaultNarration);
-  const [receiptNo, setReceiptNo] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  // Concurrent-edit guard (§5)
+  const [openCount] = useState(() => useLedgerStore.getState().entries.filter(e => e.studentSno === Number(sno)).length);
 
   if (!student) {
     return <div className="p-8 text-center text-slate-400">Student not found (SNO: {sno})</div>;
@@ -43,39 +53,52 @@ export default function AddCharge() {
   };
 
   const handleSubmit = async () => {
-    if (chargeAmount <= 0) return;
-    const allTx = useLedgerStore.getState().transactions;
-    if (receiptNo.trim()) {
-      const dup = allTx.some(t => t.receiptNo && t.receiptNo.toLowerCase() === receiptNo.trim().toLowerCase());
-      if (dup) { alert(`Receipt No. ${receiptNo.trim()} already exists`); return; }
+    setError('');
+    if (chargeAmount <= 0) { setError('Amount must be greater than zero.'); return; }
+    if (!narration.trim()) { setError('Description is required for every charge — it appears in the audit trail.'); return; }
+    const all = useLedgerStore.getState().entries;
+    if (all.filter(e => e.studentSno === student.sno).length !== openCount) {
+      setError("This student's ledger has changed since you opened this page — go back, refresh and review before posting.");
+      return;
     }
+    // §7.6: a struck-off student is not charged more. §7.7 lets a certificate-style
+    // special charge through for a student who has finished, which is why only the
+    // struck-off case is passed here.
+    const blocker = postingBlocker('SpecialCharge', { struckOff: student.struckOff, completed: false });
+    if (blocker) { setError(blocker); return; }
     setLoading(true);
-    const nextTxn = getNextTxnNo(allTx, student.sno);
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
-    // Map charge type to TransactionType — deliberate charges keep their own
-    // badge (Exam/CT/Annual/Fine) so they never masquerade as Adj corrections.
-    const mapType: Record<string, TransactionType> = { Exam: 'Exam', CT: 'CT', Annual: 'Annual', Late: 'Fine', Library: 'Fine', Equipment: 'Fine', Other: 'Fine' };
-    const txType: TransactionType = mapType[chargeType] ?? 'Fine';
-    const tx: LedgerTransaction = {
-      id: `tx-${student.sno}-${nextTxn}-${Date.now()}`,
+    const label = CHARGE_TYPES.find(c => c.value === chargeType)?.label ?? chargeType;
+    // One positive SpecialCharge entry (§6). It used to be stored as a negative
+    // discount, which is how a fine and a concession became the same column (§7.10).
+    const entryNo = useLedgerStore.getState().nextEntryNo(student.sno);
+    const entry: LedgerEntry = {
+      id: entryId(student.sno, entryNo),
       studentSno: student.sno,
-      txnNo: nextTxn,
+      entryNo,
       date,
-      type: txType,
-      fees: 0,
-      discount: -Math.abs(chargeAmount),
-      payment: 0,
-      receiptNo: receiptNo.trim() || null,
-      receivedBy: userName,
-      narration: narration.trim() || CHARGE_TYPES.find(c=>c.value===chargeType)?.defaultNarration || chargeType,
-      createdAt: new Date().toISOString(),
+      type: 'SpecialCharge',
+      amount: Math.round(chargeAmount),
+      description: narration.trim(),
+      dueDate,
       createdBy: userName,
-      synced: false,
+      createdAt: nowISO(),
+      // Stamped by the store from the running balance the ledger check re-derives (§7.3).
+      balanceAfter: 0,
     };
-    useLedgerStore.getState().addTransaction(tx);
-    useAuditStore.getState().addLog({ user: userName, action: 'Charge Added', studentSno: student.sno, details: `${CHARGE_TYPES.find(c=>c.value===chargeType)?.label} · ${formatPKR(chargeAmount)}${receiptNo ? ` · Rcpt ${receiptNo}` : ''} — ${tx.narration}` });
+    const today = todayISO();
+    const problems = entryProblems(entry, { today, all: [...all, entry] });
+    if (problems.length) { setError(problems.join(' ')); setLoading(false); return; }
+    const outcome = useLedgerStore.getState().postEntries([entry], today);
+    if (!outcome.ok) {
+      setError(outcome.rejected.flatMap(r => r.problems).join(' '));
+      setLoading(false);
+      return;
+    }
+    useAuditStore.getState().addLog({ user: userName, action: 'Charge Added', studentSno: student.sno, details: `${label} · ${formatPKR(entry.amount)} — ${entry.description}` });
+    toastSuccess({ title: `${label} charged`, description: `${formatPKR(entry.amount)} added to ${student.name} (entry #${entry.entryNo}).` });
     setLoading(false);
-    navigate(`/ledger/${student.sno}`);
+    navigate(`/ledger/${student.sno}?highlight=${entry.id}`);
   };
 
   return (
@@ -97,26 +120,30 @@ export default function AddCharge() {
           <CardTitle>Charge Details</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Charge Type */}
+          {/* Charge Type — segmented, fixed consequential set */}
           <div>
-            <Label>Charge Type</Label>
-            <div className="space-y-2 mt-2">
-              {CHARGE_TYPES.map(ct => (
-                <label key={ct.value} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="chargeType"
-                    value={ct.value}
-                    checked={chargeType === ct.value}
-                    onChange={(e) => handleTypeChange(e.target.value)}
-                    className="accent-blue-500 w-4 h-4"
-                  />
-                  <span className="text-sm text-slate-700">{ct.label}</span>
-                  {ct.defaultNarration && (
-                    <span className="text-xs text-slate-400">({ct.defaultNarration})</span>
-                  )}
-                </label>
-              ))}
+            <Label>Charge Type *</Label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2" role="radiogroup" aria-label="Charge type">
+              {CHARGE_TYPES.map(ct => {
+                const active = chargeType === ct.value;
+                return (
+                  <button
+                    key={ct.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => handleTypeChange(ct.value)}
+                    className={`rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-[#2451B8] ${
+                      active ? 'border-[#2451B8] bg-blue-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="text-[13px] font-medium">{ct.label}</div>
+                    {ct.defaultNarration && (
+                      <div className="text-[11px] font-normal text-slate-500 truncate">{ct.defaultNarration}</div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -134,27 +161,34 @@ export default function AddCharge() {
               <Input
                 type="date"
                 value={date}
-                onChange={(e) => setDate(e.target.value)}
+                onChange={(e) => { setDate(e.target.value); setDueDate(addDays(e.target.value, DEFAULT_TERM_DUE_DAYS)); }}
               />
             </div>
           </div>
 
           <div>
-            <Label>Narration</Label>
+            <Label>Due Date *</Label>
             <Input
-              value={narration}
-              onChange={(e) => setNarration(e.target.value)}
-              placeholder="Auto-filled based on type — editable"
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
             />
+            <p className="text-xs text-slate-400 mt-1">
+              A charge has to be due sometime — ageing and the defaulter list read it from here (§24.1).
+            </p>
           </div>
 
           <div>
-            <Label>Receipt No.</Label>
+            <Label>Description *</Label>
             <Input
-              value={receiptNo}
-              onChange={(e) => setReceiptNo(e.target.value)}
-              placeholder="If receipt issued for this charge"
+              value={narration}
+              onChange={(e) => setNarration(e.target.value)}
+              placeholder="Required — e.g. Board exam fee Sem 3"
+              className={!narration.trim() ? 'border-red-300' : ''}
             />
+            {!narration.trim() && (
+              <p className="text-xs text-red-500 mt-1">Description is required — a charge without one creates an ambiguous audit entry.</p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -164,7 +198,10 @@ export default function AddCharge() {
         <CardContent className="py-5">
           <div className="text-sm text-blue-600 font-medium mb-2">Preview — What this adds to ledger:</div>
           <div className="text-sm space-y-1">
-            <div>Type: {CHARGE_TYPES.find(c => c.value === chargeType)?.label} · Charge: +{formatPKR(chargeAmount)} · Payment: 0</div>
+            <div className="flex items-center gap-2">
+              <span>Type: {CHARGE_TYPES.find(c => c.value === chargeType)?.label}</span>
+              <SignedAmount value={chargeAmount} />
+            </div>
             <div className="font-medium">
               New Balance: {formatPKR(student.computedBalance)} → {formatPKR(newBalance)}
               <span className="text-amber-500 ml-2">(charge increases balance)</span>
@@ -173,10 +210,14 @@ export default function AddCharge() {
         </CardContent>
       </Card>
 
+      {error && (
+        <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-600">{error}</div>
+      )}
+
       <div className="flex justify-between">
         <Button variant="outline" onClick={() => navigate(-1)}>Cancel</Button>
-        <Button onClick={handleSubmit} disabled={loading || chargeAmount <= 0}>
-          {loading ? 'Adding...' : 'Add Charge to Ledger'}
+        <Button onClick={handleSubmit} disabled={loading || chargeAmount <= 0 || !narration.trim()}>
+          {loading ? 'Adding...' : `Add Charge ${formatPKR(chargeAmount)}`}
         </Button>
       </div>
     </div>

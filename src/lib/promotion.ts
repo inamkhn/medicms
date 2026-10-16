@@ -1,25 +1,23 @@
 // ============================================
-// MediCMS - Promotion helpers
-// Locked admission fee: one-time heads only in Sem-1,
-// recurring heads repeat on promotion.
+// MediCMS Desktop - Promotion helpers
+// A promotion bills the student's own locked plan figure when they have one, and
+// falls back to the Active template's charge for the term after their current one
+// (design doc §16). The eight-head breakup helpers that used to live here are gone:
+// those numbers are now derived from components in lib/fee/templateCompat.
 // ============================================
 
-import { getSubCourseDef } from '@/lib/constants';
-import { MOCK_FEE_TEMPLATES } from '@/lib/mockData';
-import type { ProgramCode, Semester, Student } from '@/types';
+import { getSubCourseDef, SEMESTER_OPTIONS } from '@/lib/constants';
+import { nextBilledTerm, templateTotalOf } from '@/lib/fee/templateCompat';
+import { findActiveFor } from '@/lib/fee/templateRules';
+import type { FeeTemplate, ProgramCode, Semester, Student } from '@/types';
 
-export interface FeeBreakup {
-  admissionFee: number; tuitionFee: number; idCardFee: number;
-  annualCharges: number; securityFee: number; enrollmentFee: number;
-  diplomaFee: number; clinicalCharges: number;
-}
-
-export function splitFee(b: FeeBreakup): { full: number; recurring: number; oneTime: number } {
-  const full =
-    b.admissionFee + b.tuitionFee + b.idCardFee + b.annualCharges +
-    b.securityFee + b.enrollmentFee + b.diplomaFee + b.clinicalCharges;
-  const recurring = b.tuitionFee + b.annualCharges + b.clinicalCharges + b.diplomaFee;
-  return { full, recurring, oneTime: full - recurring };
+/**
+ * Term number (1-based) for a semester label. The engine works in term numbers
+ * because a template's timing options are expressed against them (§5.3).
+ */
+export function termIndexOf(semester: Semester): number {
+  const index = SEMESTER_OPTIONS.indexOf(semester);
+  return index < 0 ? 1 : index + 1;
 }
 
 export function getNextTerm(program: ProgramCode, current: Semester): Semester | null {
@@ -29,17 +27,15 @@ export function getNextTerm(program: ProgramCode, current: Semester): Semester |
   return sub.terms[idx + 1];
 }
 
-/** Default promotion fee: locked recurring fee, else template recurring, else template total. */
-export function getPromotionFee(student: Student): number {
+/**
+ * What the next term should cost this student. Their admission-locked recurring
+ * figure wins — §16 "a student keeps the fees agreed in their own plan for the whole
+ * course, even if the institute raises the template next session" — and only a
+ * student with no locked figure is priced from the current Active template.
+ */
+export function getPromotionFee(student: Student, templates: readonly FeeTemplate[]): number {
   if (typeof student.baseFeeRecurring === 'number') return student.baseFeeRecurring;
-  const tpl = MOCK_FEE_TEMPLATES.find(
-    (t) => t.program === student.program && t.course === student.course && t.semester === student.semester
-  );
-  if (tpl) return splitFee(tpl).recurring || splitFee(tpl).full;
-  return 0;
-}
-
-/** Full Sem-1 total for a breakup (used at admission review). */
-export function getFullTotal(b: FeeBreakup): number {
-  return splitFee(b).full;
+  const template = findActiveFor(templates, student);
+  if (!template) return 0;
+  return templateTotalOf(template, nextBilledTerm(template, termIndexOf(student.semester)));
 }

@@ -5,6 +5,8 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { ProgramCode } from '@/types';
+import { DEFAULT_FINANCE_LIMITS, type FinanceLimits } from '@/lib/finance';
 
 interface SettingsState {
   showTestRecords: boolean;
@@ -16,9 +18,23 @@ interface SettingsState {
   bankName: string;
   accountNo: string;
   paperSize: '80mm' | 'A4';
+  /**
+   * §5.4 - how many terms make one academic year, per program. Absent means "use the
+   * value derived from the course system", so this only stores what the institute set.
+   */
+  termsPerYearByProgram: Partial<Record<ProgramCode, number>>;
+  /**
+   * §77: the entry limits, from their defaults. Each screen that owns one
+   * (pay out, petty vouchers, bill images, cash warnings) checks this value —
+   * the Settings page is the only place that changes it.
+   */
+  financeLimits: FinanceLimits;
   setInstitute: (name: string, address: string, phone: string) => void;
   setBank: (name: string, accountNo: string) => void;
   setPaperSize: (v: '80mm' | 'A4') => void;
+  setFinanceLimits: (patch: Partial<FinanceLimits>) => void;
+  /** null or 0 clears the override and falls back to the derived value. */
+  setTermsPerYear: (program: ProgramCode, termsPerYear: number | null) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -33,11 +49,41 @@ export const useSettingsStore = create<SettingsState>()(
       bankName: 'Bank Al Habib Limited Islamic',
       accountNo: '5533-0081-000190-01-1',
       paperSize: '80mm',
+      termsPerYearByProgram: {},
+      financeLimits: DEFAULT_FINANCE_LIMITS,
       setInstitute: (instituteName, instituteAddress, institutePhone) =>
         set({ instituteName, instituteAddress, institutePhone }),
       setBank: (bankName, accountNo) => set({ bankName, accountNo }),
       setPaperSize: (paperSize) => set({ paperSize }),
+      setFinanceLimits: (patch) => set((s) => ({
+        financeLimits: {
+          ...s.financeLimits,
+          ...Object.fromEntries(
+            Object.entries(patch).filter(([, v]) => Number.isInteger(v) && (v as number) >= 0),
+          ),
+        },
+      })),
+      setTermsPerYear: (program, termsPerYear) => set((s) => {
+        const next = { ...s.termsPerYearByProgram };
+        if (!termsPerYear || termsPerYear < 1) delete next[program];
+        else next[program] = Math.trunc(termsPerYear);
+        return { termsPerYearByProgram: next };
+      }),
     }),
-    { name: 'medicms-settings' }
+    {
+      name: 'medicms-settings',
+      // A copy saved before a new §77 limit existed carries only the keys known
+      // then; rehydrating it must not leave the newer limits undefined, so the
+      // finance limits are merged over their defaults while every other
+      // preference keeps the shallow replace-on-key behaviour.
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<SettingsState>;
+        return {
+          ...current,
+          ...saved,
+          financeLimits: { ...DEFAULT_FINANCE_LIMITS, ...(saved.financeLimits ?? {}) },
+        };
+      },
+    }
   )
 );

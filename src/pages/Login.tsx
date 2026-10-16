@@ -1,130 +1,122 @@
 // ============================================
-// MediCMS Desktop v4.0 - Login Page
+// Login — Feature 1 §5
+// Multi-user sign-in. No demo credentials, no admin/admin. The generic error never
+// reveals which field was wrong; disabled and locked states say so explicitly
+// because those are actionable for the user, unlike a wrong password.
 // ============================================
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
+import Setup from '@/pages/Setup';
+import { AuthScreen } from '@/components/auth/AuthScreen';
+import { ChangePasswordDialog } from '@/components/auth/ChangePasswordDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useAuthStore } from '@/stores';
-import { INSTITUTE_INFO } from '@/lib/constants';
+import { useAuthStore, type LoginResult } from '@/stores/authStore';
+import { useUserStore } from '@/stores/userStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+
+const MESSAGES: Record<Exclude<LoginResult, { ok: true }>['reason'], string> = {
+  incorrect: 'Username or password is incorrect.',
+  disabled: 'This account is disabled. Contact your administrator.',
+  locked: 'Too many failed attempts. This account is locked for 5 minutes.',
+};
 
 export default function Login() {
+  const navigate = useNavigate();
+  // First launch has no accounts: replace the sign-in form with setup (§4).
+  const needsSetup = useUserStore((s) => s.users.length === 0);
+  const instituteName = useSettingsStore((s) => s.instituteName);
+  const instituteAddress = useSettingsStore((s) => s.instituteAddress);
+  const login = useAuthStore((s) => s.login);
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  
-  const navigate = useNavigate();
-  const login = useAuthStore((s) => s.login);
+  const [forceChange, setForceChange] = useState(false);
+
+  if (needsSetup) return <Setup />;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
-
-    // Simulate login (replace with actual API call)
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Demo credentials
-    if (username === 'admin' && password === 'admin') {
-      login({
-        id: '1',
-        username: 'admin',
-        name: 'Admin Khalid',
-        role: 'Admin',
-      });
-      navigate('/dashboard');
-    } else {
-      setError('Invalid username or password');
-    }
-
+    const result = await login(username, password);
     setLoading(false);
+    if (result.ok) {
+      // A reset password must be replaced before the app opens (§7).
+      if (result.mustChangePassword) setForceChange(true);
+      else navigate('/dashboard', { replace: true });
+      return;
+    }
+    setError(MESSAGES[result.reason]);
+    setPassword('');
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/30 flex items-center justify-center p-6">
-      <div className="bg-white rounded-3xl shadow-xl shadow-slate-200/50 p-10 w-full max-w-[420px] border border-slate-100/40">
-        {/* Logo */}
-        <div className="text-center mb-10">
-          <div className="w-18 h-18 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-lg shadow-blue-200/50" style={{ width: '72px', height: '72px' }}>
-            <span className="text-white font-bold text-3xl">M</span>
-          </div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">MediCMS Desktop</h1>
-          <p className="text-sm text-slate-500 mt-2">
-            {INSTITUTE_INFO.name} — {INSTITUTE_INFO.location}
-          </p>
+    <AuthScreen instituteName={instituteName} instituteLine={instituteAddress} heading="Sign in" subheading="Enter your username and password.">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="username">Username</Label>
+          <Input
+            id="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Enter username"
+            autoComplete="username"
+            autoFocus
+            invalid={!!error}
+          />
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <Label htmlFor="username">Username</Label>
+        <div className="space-y-1.5">
+          <Label htmlFor="password">Password</Label>
+          <div className="relative">
             <Input
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="Enter username"
-              required
-              className="mt-2"
+              id="password"
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter password"
+              autoComplete="current-password"
+              invalid={!!error}
+              className="pr-10"
             />
-          </div>
-
-          <div>
-            <Label htmlFor="password">Password</Label>
-            <div className="relative mt-2">
-              <Input
-                id="password"
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
-                required
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
-              >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </div>
-
-          {error && (
-            <div className="text-sm text-red-600 bg-red-50/80 p-3.5 rounded-xl border border-red-100">
-              {error}
-            </div>
-          )}
-
-          <Button type="submit" className="w-full h-12 text-[15px]" disabled={loading}>
-            {loading ? 'Logging in...' : 'Login'}
-          </Button>
-        </form>
-
-        {/* Offline Note */}
-        <div className="mt-7 text-center text-xs text-slate-400">
-          Works offline — cached credentials (7-day window)
-        </div>
-
-        {/* Demo Credentials */}
-        <div className="mt-5 p-4 bg-slate-50 rounded-xl text-sm text-slate-500 border border-slate-100/60">
-          <div className="font-medium text-slate-700 mb-2">Demo Credentials</div>
-          <div className="space-y-1">
-            <div className="flex justify-between">
-              <span>Admin</span>
-              <span className="font-mono text-xs text-slate-600">admin / admin</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Admin access only</span>
-              <span className="font-mono text-xs text-slate-600">single role</span>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-control p-1 text-ink-subtle transition-colors duration-120 hover:text-ink"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
           </div>
         </div>
+
+        {error ? (
+          <div className="rounded-control border border-danger/30 bg-danger-soft p-3 text-body text-danger" role="alert">
+            {error}
+          </div>
+        ) : null}
+
+        <Button type="submit" size="lg" className="w-full" loading={loading} disabled={loading}>
+          {loading ? 'Signing in…' : 'Sign in'}
+        </Button>
+
+        <p className="text-center text-micro text-ink-muted">
+          Forgot your password? Ask your administrator to reset it.
+        </p>
+      </form>
+
+      <div className="mt-6 border-t border-hairline-soft pt-4 text-center text-micro text-ink-subtle">
+        Works offline against the local user list.
       </div>
-    </div>
+
+      <ChangePasswordDialog forced open={forceChange} onOpenChange={setForceChange} onDone={() => navigate('/dashboard', { replace: true })} />
+    </AuthScreen>
   );
 }
