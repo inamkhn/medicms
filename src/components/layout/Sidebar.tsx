@@ -6,7 +6,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Users, UserPlus, BookOpen, CreditCard,
   FileText, Receipt, Building2, History, Settings, Database, LogOut, Layers,
-  ChevronsLeft, ChevronsRight, ShieldCheck, Landmark, ArrowLeftRight, CalendarCheck, ScrollText, Store, Inbox, Undo2, Wallet
+  ChevronsLeft, ChevronsRight, ShieldCheck, Landmark, ArrowLeftRight, CalendarCheck, ScrollText, Store, Inbox, Undo2, Wallet, Briefcase, ClipboardList, HandCoins, Banknote, Gauge, FileSpreadsheet
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { can, type Permission } from '@/lib/permissions';
@@ -59,6 +59,18 @@ const MONEY_ITEMS: NavItem[] = [
 
 const OPERATIONS_ITEMS: NavItem[] = [
   { to: '/academic', label: 'Academic setup', icon: Layers, perm: 'academic.view' },
+];
+
+// Staff & Payroll §47: the register. P8 ships the directory; the pay/advance/run
+// screens join in later phases and read their own payroll.* verbs.
+const STAFF_ITEMS: NavItem[] = [
+  { to: '/staff', label: 'Overview', icon: Gauge, perm: 'staff.view', end: true },
+  { to: '/staff/directory', label: 'Staff directory', icon: Briefcase, perm: 'staff.directory.view' },
+  { to: '/staff/work-inputs', label: 'Work inputs', icon: ClipboardList, perm: 'payroll.inputs.manage' },
+  { to: '/staff/advances', label: 'Salary advances', icon: HandCoins, perm: 'payroll.advances.view' },
+  { to: '/staff/payroll', label: 'Pay runs', icon: Wallet, perm: 'payroll.summary.view' },
+  { to: '/staff/payouts', label: 'Payouts', icon: Banknote, perm: 'payroll.payout.summary' },
+  { to: '/staff/reports', label: 'Payroll reports', icon: FileSpreadsheet, perm: 'payroll.reports.view' },
 ];
 
 const REPORTS_ITEMS: NavItem[] = [
@@ -132,6 +144,7 @@ export function Sidebar() {
     { title: 'Main', items: MAIN_ITEMS },
     { title: 'Fees', items: FINANCE_ITEMS },
     { title: 'Money', items: MONEY_ITEMS },
+    { title: 'Staff', items: STAFF_ITEMS },
     { title: 'Operations', items: OPERATIONS_ITEMS },
     { title: 'Reports', items: REPORTS_ITEMS },
     { title: 'System', items: SYSTEM_ITEMS },

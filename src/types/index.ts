@@ -311,6 +311,10 @@ export type AuditAction =
   | 'Academic Setup'
   // Finance core — FINANCE_CORE_DESIGN §3: accounts, transfers, deposits, day closes
   | 'Finance Entry'
+  // Staff & Payroll — STAFF_PAYROLL_DESIGN §47/§48: staff record create/edit (secret-free)
+  | 'Staff Entry'
+  // Staff & Payroll — STAFF_PAYROLL_DESIGN §60: a payroll Settings change is audited
+  | 'Settings Change'
   // Access events — Feature 1 §8
   | 'Failed Sign In' | 'Sign Out' | 'Auto-Lock' | 'Unlock'
   | 'Password Change' | 'Password Reset' | 'User Created' | 'User Disabled' | 'Role Changed';

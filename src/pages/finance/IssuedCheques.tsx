@@ -24,10 +24,12 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { formatPKR, formatDate } from '@/lib/utils';
+import { toastError } from '@/lib/toast';
 import { dayKey } from '@/lib/dates';
 import { nowISO } from '@/lib/txn';
 import { can } from '@/lib/permissions';
 import { useAuditStore, useAuthStore, useBillsStore, useMoneyStore, useSettingsStore } from '@/stores';
+import { usePayrollStore } from '@/stores/payrollStore';
 import {
   availableBalance,
   cancelCheque,
@@ -254,6 +256,17 @@ function NewChequeDialog({
   );
 }
 
+/** §57.2: when a payroll cheque clears or cancels in this register, the payroll
+ * settlement follows it — money has moved (or the commitment is withdrawn) and
+ * the staff line's payable position must agree with the bank's books. */
+function syncPayrollSettlement(chequeId: string, to: 'Cleared' | 'Cancelled') {
+  const payroll = usePayrollStore.getState();
+  const disb = payroll.disbursements.find((d) => d.chequeId === chequeId && d.state === 'Posted');
+  if (!disb) return;
+  const problems = payroll.setDisbursementState(disb.id, to);
+  if (problems.length) toastError({ title: 'Payroll settlement not updated', description: problems[0] });
+}
+
 // -------------------------------------------
 // Mark cleared (§31.2) — the one action that posts a money entry
 // -------------------------------------------
@@ -283,6 +296,7 @@ function MarkClearedDialog({ cheque, onClose }: { cheque: IssuedCheque; onClose:
     const outcome = state.postEntries(result.entries, dayKey());
     if (!outcome.ok) { setProblems(outcome.rejected.flatMap((r) => r.problems)); return; }
     state.markChequeCleared(cheque.id, clearDate, result.entries[0].id);
+    syncPayrollSettlement(cheque.id, 'Cleared');
     setWarnings(result.warnings);
     useAuditStore.getState().addLog({ user: useAuthStore.getState().user?.name ?? 'Admin', action: 'Finance Entry', details: `Cheque ${cheque.chequeNo} cleared ${clearDate} · ${formatPKR(cheque.amount)}` });
     onClose();
@@ -344,6 +358,7 @@ function CancelChequeDialog({ cheque, onClose }: { cheque: IssuedCheque; onClose
     );
     if (!result.ok) { setProblems(result.errors); return; }
     state.cancelIssuedCheque(cheque.id, reason.trim());
+    syncPayrollSettlement(cheque.id, 'Cancelled');
     if (linked) {
       useBillsStore.getState().voidVoucher(linked.no, `Cheque ${cheque.chequeNo} cancelled: ${reason.trim()}`);
     }

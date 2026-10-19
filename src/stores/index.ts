@@ -26,3 +26,5 @@ export { useFeeTemplateStore } from './feeTemplateStore';
 export type { TemplateSaveResult } from './feeTemplateStore';
 export { useDirectoryStore } from './directoryStore';
 export type { SavedView } from './directoryStore';
+export { usePayrollStore } from './payrollStore';
+export type { NewStaffInput, NewAdvance, StaffPatch } from './payrollStore';

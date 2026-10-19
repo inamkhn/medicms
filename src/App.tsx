@@ -50,6 +50,20 @@ import VendorPage from '@/pages/finance/VendorPage';
 import PayOut from '@/pages/finance/PayOut';
 import Vouchers from '@/pages/finance/Vouchers';
 import VoucherPage from '@/pages/finance/VoucherPage';
+import StaffDirectory from '@/pages/staff/StaffDirectory';
+import StaffProfile from '@/pages/staff/StaffProfile';
+import WorkInputs from '@/pages/staff/WorkInputs';
+import Advances from '@/pages/staff/Advances';
+import PayRuns from '@/pages/staff/PayRuns';
+import RunDetail from '@/pages/staff/RunDetail';
+import PayoutPlanner from '@/pages/staff/PayoutPlanner';
+import Payouts from '@/pages/staff/Payouts';
+import PayoutBatchPage from '@/pages/staff/PayoutBatchPage';
+import StaffOverview from '@/pages/staff/StaffOverview';
+import StaffReports from '@/pages/staff/StaffReports';
+import StaffReportDetail from '@/pages/staff/StaffReportDetail';
+import Payslip from '@/pages/staff/Payslip';
+import StaffPayrollSettings from '@/pages/staff/StaffPayrollSettings';
 import { Toaster } from '@/components/ui/toast';
 import { ConfirmDialogHost } from '@/components/ui/confirm-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -141,6 +155,44 @@ export default function App() {
           <Route path="finance/vouchers" element={<RequirePermission perm="finance.view"><Vouchers /></RequirePermission>} />
           <Route path="finance/vouchers/:id" element={<RequirePermission perm="finance.view"><VoucherPage /></RequirePermission>} />
           <Route path="finance/day-close" element={<RequirePermission perm="payment.record"><DayClose /></RequirePermission>} />
+          {/* Staff & Payroll §47: the register. The directory and each profile read
+              staff.directory.view; the Add/Edit drawer inside them is gated further on
+              staff.manage, so a non-Admin views but cannot change (§43, §48). */}
+          <Route path="staff/directory" element={<RequirePermission perm="staff.directory.view"><StaffDirectory /></RequirePermission>} />
+          {/* Staff & Payroll §50/§43: monthly work inputs are Admin-only — a direct URL
+              from another role fails exactly like the hidden nav item would. Placed
+              before staff/:id so the static segment is not swallowed by the id route. */}
+          <Route path="staff/work-inputs" element={<RequirePermission perm="payroll.inputs.manage"><WorkInputs /></RequirePermission>} />
+          {/* Staff & Payroll §51/§43: salary advances are Admin-only and are never
+              exposed through Finance Core aggregate permissions. */}
+          <Route path="staff/advances" element={<RequirePermission perm="payroll.advances.view"><Advances /></RequirePermission>} />
+          {/* Staff & Payroll §52/§54: the pay-run register and review. The list and detail
+              read payroll.summary.view (an Accountant sees aggregates only — the projection
+              drops named lines); generation and the lifecycle actions gate further on
+              payroll.run.manage inside the pages. Static segments sit before staff/:id. */}
+          <Route path="staff/payroll" element={<RequirePermission perm="payroll.summary.view"><PayRuns /></RequirePermission>} />
+          <Route path="staff/payroll/:id" element={<RequirePermission perm="payroll.summary.view"><RunDetail /></RequirePermission>} />
+          {/* Staff & Payroll §55/§56: the payout planner is Admin-only (payroll.payout.manage)
+              and sits before staff/:id; the register and batch page read payroll.payout.summary
+              (the Accountant gets aggregates — the projection drops named recipients). Money
+              is only moved at execution, which Finance Core posts in P14. */}
+          <Route path="staff/payroll/:id/payouts" element={<RequirePermission perm="payroll.payout.manage"><PayoutPlanner /></RequirePermission>} />
+          <Route path="staff/payouts" element={<RequirePermission perm="payroll.payout.summary"><Payouts /></RequirePermission>} />
+          <Route path="staff/payouts/:id" element={<RequirePermission perm="payroll.payout.summary"><PayoutBatchPage /></RequirePermission>} />
+          {/* Staff & Payroll §45–§46: the module landing page — a getting-started checklist
+              or the derived status/payment position, all read through the report core. */}
+          <Route path="staff" element={<RequirePermission perm="staff.view"><StaffOverview /></RequirePermission>} />
+          {/* Staff & Payroll §58: payroll reports. Aggregates read payroll.reports.view; a
+              named-compensation report is masked again inside the core for a non-Admin (§43). */}
+          <Route path="staff/reports" element={<RequirePermission perm="payroll.reports.view"><StaffReports /></RequirePermission>} />
+          <Route path="staff/reports/:name" element={<RequirePermission perm="payroll.reports.view"><StaffReportDetail /></RequirePermission>} />
+          {/* Staff & Payroll §59.1: a payslip is Admin-only (payroll.compensation.view) — a
+              typed URL from another role fails exactly like the hidden link would (§43). */}
+          <Route path="staff/payslip/:lineId" element={<RequirePermission perm="payroll.compensation.view"><Payslip /></RequirePermission>} />
+          {/* Staff & Payroll §60: payroll-owned Settings — number prefixes and
+              screen defaults; Admin only, and changes never touch approved runs. */}
+          <Route path="staff/settings" element={<RequirePermission perm="payroll.settings.manage"><StaffPayrollSettings /></RequirePermission>} />
+          <Route path="staff/:id" element={<RequirePermission perm="staff.directory.view"><StaffProfile /></RequirePermission>} />
           {/* Finance §58: the legacy expenses list is gone — the bill register
               answers the same need. The bank-withdrawal tagger stays until
               reconciliation replaces it (F6). */}

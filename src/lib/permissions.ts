@@ -30,6 +30,17 @@ export type Permission =
   // finance.view. The legacy 'expense.add' and 'bank.view' stay until their
   // screens are replaced.
   | 'finance.view' | 'finance.transfer' | 'finance.cheque' | 'finance.bills' | 'finance.pay' | 'finance.petty'
+  // Staff & Payroll — STAFF_PAYROLL_DESIGN §43. Individual pay, advances, work
+  // inputs, run generation, payout planning and payroll settings are Admin-only.
+  // The Accountant holds only aggregates — the run register and payout batches as
+  // counts/totals, and reports — plus the non-pay staff directory. Projections
+  // (§ src/lib/payroll/projections) strip named compensation for every other
+  // role; holding one of these verbs is never what makes pay visible.
+  | 'staff.view' | 'staff.directory.view' | 'staff.manage'
+  | 'payroll.compensation.view' | 'payroll.advances.view' | 'payroll.inputs.manage'
+  | 'payroll.summary.view' | 'payroll.run.manage'
+  | 'payroll.payout.manage' | 'payroll.payout.summary'
+  | 'payroll.reports.view' | 'payroll.settings.manage'
   // academic setup — BATCHES_ACADEMIC_SETUP_DESIGN §3
   | 'academic.view' | 'academic.manage' | 'academic.relink'
   // Batch state actions an Accountant may also take (§3): admissions, term dates, complete.
@@ -71,6 +82,10 @@ const ACCOUNTANT: Permission[] = [
   // edit term dates and mark a batch completed — but never creates/edits a batch,
   // renames, reopens a completed batch, deletes or re-links (those stay Admin-only).
   'academic.view', 'academic.admissions', 'academic.dates', 'academic.complete',
+  // Staff & Payroll §43: aggregates only — the run register and payout batches as
+  // counts/totals and reports. Never compensation, advances, inputs or planning.
+  'staff.view', 'staff.directory.view',
+  'payroll.summary.view', 'payroll.payout.summary', 'payroll.reports.view',
 ];
 
 // Admin: the union of everything, held as an explicit set so `can()` has one shape.
@@ -78,6 +93,11 @@ const ADMIN: Permission[] = [
   ...ACCOUNTANT,
   'student.bulkStrike', 'settings.manage', 'user.manage',
   'academic.manage', 'academic.relink',
+  // Payroll §43: everything individual is Admin-only — named pay, advances,
+  // inputs, run generation, payout planning and payroll settings.
+  'staff.manage',
+  'payroll.compensation.view', 'payroll.advances.view', 'payroll.inputs.manage',
+  'payroll.run.manage', 'payroll.payout.manage', 'payroll.settings.manage',
 ];
 
 export const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {

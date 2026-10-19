@@ -52,6 +52,7 @@ export type MoneyEntryKind =
   | 'RefundToStudent'
   | 'BillPayment'
   | 'PayrollPayment'
+  | 'StaffAdvance'
   | 'ChequeClearedOut'
   | 'TransferOut'
   | 'TransferIn'
