@@ -5,7 +5,7 @@
 
 // The fee engine owns the component shape; the stored template references it instead
 // of keeping a second copy that could drift (FEE_TEMPLATES_AND_ADMISSION_DESIGN §5.2).
-import type { FeeComponent } from '@/lib/fee/types';
+import type { ConcessionRecord, FeeComponent } from '@/lib/fee/types';
 
 export type { FeeComponent, ChargeTiming } from '@/lib/fee/types';
 
@@ -137,22 +137,43 @@ export interface Student {
   session: number;                // Year e.g. 2017
   semester: Semester;             // Current semester (derived from ledger)
   // Locked fee at admission: full Sem-1 total + recurring promotion default.
-  // Superseded by the component plan + concession records (design doc §13.2/§15.2),
-  // which is slice 3; for now these are derived from the v2 template so a student's
-  // locked figures and the template can never disagree (§7.4 - the plan is a copy).
+  // Derived from the v2 template so a student's locked figures and the template can
+  // never disagree (§7.4 - the plan is a copy).
   baseFeeTotal?: number;
   baseFeeRecurring?: number;
   baseFeeBreakup?: LegacyFeeHeads;
+  // §13.2/§15.2: the concession records the plan was saved with, and the template
+  // (version included) it was copied from. Template amounts stay untouched; the
+  // student's figure is always derived from these records (§13.3).
+  planConcessions?: ConcessionRecord[];
+  feeTemplateId?: string;
+  feeTemplateVersion?: number;
   photoUrl?: string | null;        // Base64 data URL or remote URL (for ID Card)
   dob?: string | null;               // ISO date (YYYY-MM-DD)
   gender?: 'Male' | 'Female' | 'Other' | null;
   domicile?: string | null;          // District / Tehsil
   emergencyContact?: string | null;
+  // §23.3 import columns that the model used to drop on the floor:
+  guardianName?: string | null;       // person who pays the fees, if not the student
+  guardianPhone?: string | null;
+  councilRegistrationNo?: string | null; // issued by the council, where one applies
+  rollNo?: string | null;             // institute roll number
+  previousEducation?: string | null;  // §25 editable: school/college before admission
   struckOff: boolean;
   struckOffDate?: string;
   struckOffReason?: string;
+  /** §26.5: finished the final term — leaves active counts, kept for payments. */
+  completed?: boolean;
+  completedDate?: string;
+  /** §26.5: temporarily away — a reason and expected return date are required. */
+  onLeave?: boolean;
+  leaveReason?: string;
+  leaveDate?: string;
+  leaveReturnDate?: string;
   isTestRecord: boolean;          // For "Director Sb" type entries
   synced: boolean;
+  /** Stamped by `updateStudent` so an import undo can tell an edited row (§23.7). */
+  updatedAt?: string;
 }
 
 // --- Fee Template (v2, design doc §5) ---
@@ -302,8 +323,8 @@ export interface AuditChange {
   after: string;
 }
 
-export type AuditAction = 
-  | 'Payment' | 'Fee Demand' | 'Charge Added' | 'Ledger Adjustment'
+export type AuditAction =
+  | 'Payment' | 'Fee Demand' | 'Charge Added' | 'Ledger Adjustment' | 'Ledger Reversal'
   | 'New Admission' | 'Student Edit' | 'Struck Off' | 'Struck Off Reversed'
   | 'Bank Entry' | 'Expense Added' | 'Fee Template Change'
   | 'Sync Event' | 'Login' | 'Data Import'
@@ -315,9 +336,37 @@ export type AuditAction =
   | 'Staff Entry'
   // Staff & Payroll — STAFF_PAYROLL_DESIGN §60: a payroll Settings change is audited
   | 'Settings Change'
+  // PAYMENTS §27.1: "every reprint is counted" — the count is on the register, the
+  // who and when belong in the audit trail beside it.
+  | 'Receipt Reprint'
   // Access events — Feature 1 §8
   | 'Failed Sign In' | 'Sign Out' | 'Auto-Lock' | 'Unlock'
-  | 'Password Change' | 'Password Reset' | 'User Created' | 'User Disabled' | 'Role Changed';
+  | 'Password Change' | 'Password Reset' | 'User Created' | 'User Disabled' | 'Role Changed'
+  // Students doc §23.1: every export is written to the audit trail
+  | 'Export'
+  // Students doc §26.2/§27.4: a credit refund raised at strike-off
+  | 'Fee Refund'
+  // Students doc §26.5: completed, put on leave, returned from leave
+  | 'Student Status'
+  // Students doc §23.7: an Admin undoes an import; the undo stays in the trail
+  | 'Import Undo';
+
+// --- Import batch record (students doc §23.7) ---
+// What one CSV import created, kept so it can be undone exactly: the SNOs it
+// admitted and the opening-balance entries it posted. Both the import and the
+// undo stay in the audit trail.
+export interface ImportBatchRecord {
+  id: string;
+  /** ISO timestamp of the confirmed import — the "after the import" mark (§23.7). */
+  at: string;
+  /** Local `YYYY-MM-DD` for the history line. */
+  date: string;
+  user: string;
+  /** Students the import created (Create-anyway rows included; updates excluded). */
+  snos: number[];
+  /** Opening-balance entry ids the import posted. */
+  entryIds: string[];
+}
 
 export interface AuditLog {
   id: string;
@@ -341,13 +390,15 @@ export interface SyncStatus {
 }
 
 // --- Student Status Badge ---
-export type StudentBadgeType = 
+export type StudentBadgeType =
   | 'active'           // Struck_Off = No, balance = 0
   | 'dues'             // Struck_Off = No, balance > 0
   | 'credit'           // Struck_Off = No, balance < 0
   | 'struck_off'       // Struck_Off = Yes, balance <= 0
   | 'struck_off_dues'  // Struck_Off = Yes, balance > 0
-  | 'struck_off_credit'; // Struck_Off = Yes, balance < 0
+  | 'struck_off_credit' // Struck_Off = Yes, balance < 0
+  | 'completed'        // §26.5: finished the final term
+  | 'on_leave';        // §26.5: temporarily away
 
 export interface StudentWithBalance extends Student {
   computedBalance: number;

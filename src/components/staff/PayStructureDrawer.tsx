@@ -373,17 +373,20 @@ export function PayStructureDrawer({ open, staff, onOpenChange }: PayStructureDr
               </Select>
             </Field>
             <Field label="Program tag (optional)" htmlFor="programTag">
-              <Select value={draft.programTag || undefined} onValueChange={(v) => set('programTag', v ?? '')}>
+              {/* Optional and clearable: a wrong pick must be revertible to "None". */}
+              <Select value={draft.programTag || '__none'} onValueChange={(v) => set('programTag', v === '__none' ? '' : v)}>
                 <SelectTrigger id="programTag"><SelectValue placeholder="None" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="__none">None</SelectItem>
                   {programs.map((p) => <SelectItem key={p.id} value={p.shortCode}>{p.shortCode} — {p.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </Field>
             <Field label="Preferred payout" htmlFor="usualPayoutMode">
-              <Select value={draft.usualPayoutMode || undefined} onValueChange={(v) => set('usualPayoutMode', v ?? '')}>
+              <Select value={draft.usualPayoutMode || '__none'} onValueChange={(v) => set('usualPayoutMode', v === '__none' ? '' : v)}>
                 <SelectTrigger id="usualPayoutMode"><SelectValue placeholder="Not set" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="__none">Not set</SelectItem>
                   {PAYOUT_MODES.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
                 </SelectContent>
               </Select>

@@ -12,6 +12,8 @@ const CONFIG: Record<StudentBadgeType, { label: (b: number) => string; dot: stri
   struck_off: { label: () => 'Struck off', dot: 'bg-[#6B7280]', text: 'text-[#6B7280]' },
   struck_off_dues: { label: (b) => `Struck off · Dues ${b.toLocaleString()}`, dot: 'bg-[#6B7280]', text: 'text-[#6B7280]' },
   struck_off_credit: { label: () => 'Struck off · Credit', dot: 'bg-[#6B7280]', text: 'text-[#6B7280]' },
+  completed: { label: () => 'Completed', dot: 'bg-cleared', text: 'text-cleared' },
+  on_leave: { label: () => 'On leave', dot: 'bg-ink-muted', text: 'text-ink-muted' },
 };
 
 export function StudentStatusBadge({ badge, balance, className }: { badge: StudentBadgeType; balance: number; className?: string }) {

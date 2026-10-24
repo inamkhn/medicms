@@ -119,6 +119,16 @@ export const BATCH_OPTIONS: BatchName[] = [
 // --- Semesters / Terms ---
 export const SEMESTER_OPTIONS: Semester[] = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
 
+/**
+ * Term number (1-based) for a semester label. The engine works in term numbers
+ * because a template's timing options are expressed against them (§5.3). It lives
+ * here — alias-free — so pure modules and node tests can share the one rule.
+ */
+export function termIndexOf(semester: Semester): number {
+  const index = SEMESTER_OPTIONS.indexOf(semester);
+  return index < 0 ? 1 : index + 1;
+}
+
 // --- Sessions (years) ---
 export const SESSION_OPTIONS = Array.from(
   { length: 12 },

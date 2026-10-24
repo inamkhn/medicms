@@ -2,7 +2,8 @@
 // MediCMS Desktop v4.0 - Settings
 // ============================================
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { RefreshCw, Database, Printer, Server, Wifi, WifiOff, TestTube } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,12 +11,30 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useSyncStore } from '@/stores/syncStore';
-import { useSettingsStore, useReceiptBookStore, useBudgetStore } from '@/stores';
+import { useSettingsStore, useReceiptBookStore, useLedgerStore } from '@/stores';
 import { formatPKR, formatDateTime } from '@/lib/utils';
 import { DEFAULT_FINANCE_LIMITS, FINANCE_LIMIT_LABELS, FINANCE_LIMIT_UNITS, type FinanceLimitUnit, type FinanceLimits } from '@/lib/finance';
-import { BANK_INFO, INSTITUTE_INFO, EXPENSE_CATEGORY_OPTIONS, PROGRAM_OPTIONS, getCourseOfProgram } from '@/lib/constants';
+import { BANK_INFO, INSTITUTE_INFO, PROGRAM_OPTIONS, getCourseOfProgram } from '@/lib/constants';
 import { defaultTermsPerYear } from '@/lib/fee/templateRules';
+import { bookStateOf, bookSummaries, formatReceiptNo, rangeLabel, receiptFactsOf, type PaymentSettings } from '@/lib/receipts';
 import type { ProgramCode } from '@/types';
+
+/** §65's numeric limits — everything in the payment settings except the footer note. */
+type PaymentLimitKey = Exclude<keyof PaymentSettings, 'receiptFooter'>;
+
+const PAYMENT_LIMIT_ROWS: readonly { key: PaymentLimitKey; label: string; hint: string }[] = [
+  { key: 'backDateDays', label: 'Back-date limit for Accountant', hint: 'days — an Accountant posts up to this far back with a reason (§3, §65)' },
+  { key: 'duplicateWindowMinutes', label: 'Duplicate payment warning window', hint: 'minutes — a same student, amount and mode inside this asks first (§17)' },
+  { key: 'largeAmount', label: 'Large amount confirmation', hint: 'rupees — above this a second confirmation is required (§17)' },
+  { key: 'creditConfirm', label: 'Credit confirmation', hint: 'rupees — credit above this needs an extra confirmation (§17)' },
+  { key: 'adjustmentLimit', label: 'Adjustment limit (Accountant)', hint: 'rupees per entry (§42, §65)' },
+  { key: 'writeOffLimit', label: 'Write-off limit (Accountant)', hint: 'rupees per student (§43, §65)' },
+  { key: 'refundLimit', label: 'Refund limit (Accountant)', hint: 'rupees per refund (§44, §65)' },
+  { key: 'lateFineAfterDays', label: 'Late fine suggestion after', hint: 'days overdue before a late fine is suggested (§41)' },
+  { key: 'bounceFine', label: 'Cheque bounce fine', hint: 'rupees — 0 until the institute sets one (§35, §65)' },
+  { key: 'lowStock', label: 'Low receipt stock warning', hint: 'receipts left before the counter is warned (§24)' },
+  { key: 'receiptCopies', label: 'Receipt copies on A4', hint: '2 prints a student copy and an office copy (§61.1)' },
+];
 
 /** §77: a limit reads as money only for the rupee caps; the rest are plain
  *  counts, so a back-dating window never shows as ₨7. */
@@ -27,15 +46,28 @@ function financeLimitDefault(unit: FinanceLimitUnit, value: number): string {
 }
 
 export default function Settings() {
+  const navigate = useNavigate();
   const { status, lastSync, pendingCount, setSyncing, syncComplete } = useSyncStore();
-  const { showTestRecords, setShowTestRecords, financeLimits, setFinanceLimits } = useSettingsStore();
-  const { books, addBook } = useReceiptBookStore();
-  const { budgets, setBudget } = useBudgetStore();
-  const [budgetMonth, setBudgetMonth] = useState(new Date().toISOString().slice(0,7));
-  const [newBookNo, setNewBookNo] = useState('');
-  const [newStart, setNewStart] = useState('');
-  const [newEnd, setNewEnd] = useState('');
-  const [newAssigned, setNewAssigned] = useState('Admin Khalid');
+  const {
+    showTestRecords, setShowTestRecords, financeLimits, setFinanceLimits,
+    financeAutoAcceptMatches, setFinanceAutoAcceptMatches,
+  } = useSettingsStore();
+  const books = useReceiptBookStore((s) => s.books);
+  const bookEvents = useReceiptBookStore((s) => s.events);
+  const reprints = useReceiptBookStore((s) => s.reprints);
+  // §65 the payment and receipt limits, enforced by the payment and receipt cores.
+  const paymentSettings = useReceiptBookStore((s) => s.paymentSettings);
+  const savePaymentSettings = useReceiptBookStore((s) => s.savePaymentSettings);
+  const [receiptFooterDraft, setReceiptFooterDraft] = useState(paymentSettings.receiptFooter);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
+  const voucherPrefix = useSettingsStore((s) => s.voucherPrefix);
+  const setVoucherPrefix = useSettingsStore((s) => s.setVoucherPrefix);
+  const [voucherPrefixDraft, setVoucherPrefixDraft] = useState(voucherPrefix);
+  // §24/§28 the summary here is the register's own answer, not a stored counter.
+  const bookSlots = useMemo(
+    () => bookSummaries(books, books.flatMap((book) => receiptFactsOf(ledgerEntries, book, new Map(Object.entries(reprints)))), bookEvents),
+    [books, ledgerEntries, reprints, bookEvents],
+  );
   const instituteName = useSettingsStore((s) => s.instituteName);
   const instituteAddress = useSettingsStore((s) => s.instituteAddress);
   const institutePhone = useSettingsStore((s) => s.institutePhone);
@@ -47,6 +79,10 @@ export default function Settings() {
   const setPaperSize = useSettingsStore((s) => s.setPaperSize);
   const termsPerYearByProgram = useSettingsStore((s) => s.termsPerYearByProgram);
   const setTermsPerYear = useSettingsStore((s) => s.setTermsPerYear);
+  const reAdmissionFee = useSettingsStore((s) => s.reAdmissionFee);
+  const setReAdmissionFee = useSettingsStore((s) => s.setReAdmissionFee);
+  const cancellationWindowDays = useSettingsStore((s) => s.cancellationWindowDays);
+  const setCancellationWindowDays = useSettingsStore((s) => s.setCancellationWindowDays);
   void INSTITUTE_INFO;
   void BANK_INFO;
   const [serverUrl, setServerUrl] = useState('https://medicms-server.example.com');
@@ -219,63 +255,103 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Receipt Books */}
+      {/* Receipt Books — a summary here, the register itself on its own screen (§24, §28) */}
       <Card>
         <CardHeader>
           <CardTitle>Receipt Books</CardTitle>
-          <CardDescription>Pre-printed receipt ranges — auto-fills next number in Record Payment</CardDescription>
+          <CardDescription>
+            Pre-printed ranges with their next number and how many are left (§24). Adding a book,
+            spoiling a slip and closing a book all happen on the receipt books screen.
+          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            {books.map(b => (
-              <div key={b.id} className="flex items-center justify-between p-3 rounded-xl border border-slate-100">
-                <div>
-                  <div className="font-medium text-sm">{b.bookNo} — {b.start} to {b.end}</div>
-                  <div className="text-xs text-slate-500">Assigned to {b.assignedTo} · Next #{b.current} {b.current > b.end ? '(exhausted)' : ''} · {b.isActive ? 'Active' : 'Inactive'}</div>
-                </div>
-                <Badge variant="outline" className={b.current <= b.end ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}>{b.current <= b.end ? `${b.end - b.current + 1} left` : 'Exhausted'}</Badge>
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-4 gap-2 pt-3 border-t border-slate-100">
-            <Input placeholder="Book No e.g. Book-03" value={newBookNo} onChange={e=>setNewBookNo(e.target.value)} />
-            <Input placeholder="Start e.g. 2001" value={newStart} onChange={e=>setNewStart(e.target.value)} />
-            <Input placeholder="End e.g. 3000" value={newEnd} onChange={e=>setNewEnd(e.target.value)} />
-            <Input placeholder="Assigned To" value={newAssigned} onChange={e=>setNewAssigned(e.target.value)} />
-          </div>
-          <Button variant="outline" size="sm" onClick={()=>{
-            const s=parseInt(newStart,10), e=parseInt(newEnd,10);
-            if(!newBookNo.trim() || isNaN(s) || isNaN(e) || s>=e) { alert('Enter Book No and valid start < end'); return; }
-            if(books.some((b)=>b.bookNo.toLowerCase()===newBookNo.trim().toLowerCase())) { alert('Book No already exists.'); return; }
-            if(books.some((b)=> s<=b.end && e>=b.start)) { alert('Range overlaps an existing book — use a non-overlapping range.'); return; }
-            addBook({ bookNo: newBookNo.trim(), start: s, end: e, assignedTo: newAssigned.trim() || 'Admin', isActive: true });
-            setNewBookNo(''); setNewStart(''); setNewEnd('');
-          }}>Add Book</Button>
+        <CardContent className="space-y-3">
+          {bookSlots.length === 0 ? (
+            <p className="text-meta text-ink-subtle">
+              No receipt book yet. The counter cannot print a receipt until an Admin adds one.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {bookSlots.map(({ book, summary }) => {
+                const status = bookStateOf(book, summary.nextNumber);
+                return (
+                  <div key={book.id} className="flex items-center justify-between rounded-control border border-hairline-soft p-3">
+                    <div>
+                      <div className="text-ui font-medium text-ink">{book.name} — {rangeLabel(book)}</div>
+                      <div className="text-meta text-ink-3">
+                        {status} · {summary.issued} used · next{' '}
+                        {summary.nextNumber === null ? 'none' : formatReceiptNo(book.prefix, summary.nextNumber)}
+                      </div>
+                    </div>
+                    <Badge variant="outline">{summary.left} left</Badge>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <Button variant="outline" size="sm" onClick={() => navigate('/settings/receipt-books')}>
+            Open receipt books
+          </Button>
         </CardContent>
       </Card>
 
-      {/* Budget Management */}
+      {/* Payments and receipts (§65) — the caps the payment, void and reprint rules read */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Payments and receipts</CardTitle>
+          <CardDescription>
+            The limits the payment, cheque, receipt and register rules enforce (§65). Each one is
+            read from here — no screen invents its own default.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            {PAYMENT_LIMIT_ROWS.map(({ key, label, hint }) => (
+              <div key={key} className="flex items-center justify-between gap-3 rounded-control border border-hairline p-3">
+                <div className="min-w-0">
+                  <div className="text-meta font-medium">{label}</div>
+                  <div className="text-micro text-ink-muted">{hint}</div>
+                </div>
+                <Input
+                  type="number"
+                  min={0}
+                  className="w-[130px] text-right tabular-nums"
+                  value={String(paymentSettings[key])}
+                  onChange={(e) => savePaymentSettings({ [key]: parseInt(e.target.value, 10) || 0 })}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-control border border-hairline p-3">
+            <div className="min-w-0">
+              <div className="text-meta font-medium">Receipt footer note</div>
+              <div className="text-micro text-ink-muted">printed under every receipt; empty prints nothing (§26, §65)</div>
+            </div>
+            <Input
+              className="w-[280px]"
+              value={receiptFooterDraft}
+              onChange={(e) => setReceiptFooterDraft(e.target.value)}
+              onBlur={() => savePaymentSettings({ receiptFooter: receiptFooterDraft })}
+              placeholder="e.g. Fees once paid are not refundable"
+            />
+          </div>
+          <p className="text-micro text-ink-muted">
+            An amount above the back-date, adjustment, write-off or refund limit is blocked for an
+            Accountant and needs an Admin (§3, §46).
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Budgets live on the finance page (§47, §68) */}
       <Card>
         <CardHeader>
           <CardTitle>Budgets</CardTitle>
-          <CardDescription>Monthly budget per expense category — shown on Expenses page</CardDescription>
+          <CardDescription>
+            One plan per cost category per month, with the paid and the still-unpaid parts and
+            the 80 and 100 percent alerts (§47). An Admin edits them on the budgets page (§81.6).
+          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Label>Month</Label>
-            <Input type="month" value={budgetMonth} onChange={e=>setBudgetMonth(e.target.value)} className="w-[160px]" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {EXPENSE_CATEGORY_OPTIONS.map(cat => {
-              const val = budgets.find(b=>b.category===cat.value && b.month===budgetMonth)?.amount ?? '';
-              return (
-                <div key={cat.value} className="flex items-center gap-2">
-                  <Label className="w-32 text-xs">{cat.label}</Label>
-                  <Input type="number" placeholder="0" value={String(val)} onChange={e=> setBudget(cat.value, budgetMonth, parseInt(e.target.value,10)||0)} className="flex-1 h-8" />
-                </div>
-              );
-            })}
-          </div>
+        <CardContent>
+          <Button variant="outline" size="sm" onClick={() => navigate('/finance/budgets')}>Open budgets</Button>
         </CardContent>
       </Card>
 
@@ -307,6 +383,31 @@ export default function Settings() {
                 />
               </div>
             ))}
+          </div>
+          {/* §77: the two settings of this table that are not a number. */}
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Accept exact statement matches automatically</div>
+              <div className="text-xs text-slate-500">default off — every match is confirmed by a person (§77, §81.5)</div>
+            </div>
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={financeAutoAcceptMatches}
+              onChange={(e) => setFinanceAutoAcceptMatches(e.target.checked)}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Voucher prefix</div>
+              <div className="text-xs text-slate-500">default PV- — every payment voucher number starts with it (§29, §77)</div>
+            </div>
+            <Input
+              className="w-[130px]"
+              value={voucherPrefixDraft}
+              onChange={(e) => setVoucherPrefixDraft(e.target.value)}
+              onBlur={() => setVoucherPrefix(voucherPrefixDraft)}
+            />
           </div>
         </CardContent>
       </Card>
@@ -349,6 +450,45 @@ export default function Settings() {
             Applies to templates created or edited afterwards — a template already saved keeps the
             value it was built with until it is next edited.
           </p>
+        </CardContent>
+      </Card>
+
+      {/* Re-admission fee (§26.3, §27.5) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Re-admission fee</CardTitle>
+          <CardDescription>
+            The fee offered when a struck-off student is reinstated — posted as a special
+            charge with a due date. Default 0 means the reinstatement screen suggests no fee.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-3 rounded-card border border-hairline p-3">
+            <div>
+              <div className="text-meta font-medium">Default re-admission fee</div>
+              <div className="text-micro text-ink-muted">Whole rupees — the reinstatement screen pre-fills it and can change it</div>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              className="w-[130px] text-right tabular-nums"
+              value={String(reAdmissionFee)}
+              onChange={(e) => setReAdmissionFee(parseInt(e.target.value, 10) || 0)}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-card border border-hairline p-3 mt-2">
+            <div>
+              <div className="text-meta font-medium">Admission cancellation window</div>
+              <div className="text-micro text-ink-muted">Days after admission an Accountant may cancel without an Admin override (§27.3); 0 means same-day only</div>
+            </div>
+            <Input
+              type="number"
+              min={0}
+              className="w-[130px] text-right tabular-nums"
+              value={String(cancellationWindowDays)}
+              onChange={(e) => setCancellationWindowDays(parseInt(e.target.value, 10) || 0)}
+            />
+          </div>
         </CardContent>
       </Card>
 

@@ -18,29 +18,36 @@ import {
 import { verifyPassword } from '@/lib/crypto';
 import { useUserStore } from '@/stores';
 import { isLockedOut } from '@/stores/userStore';
+import type { UserRole } from '@/types';
 
 interface Props {
   title: string;
   /** Why it is being asked — the amount and the limit that was crossed. */
   blurb: string;
+  /**
+   * Who may sign. §32 needs an Admin above the spending limit; §16 lets an
+   * Accountant or Admin approve a concession, so the caller names its own gate.
+   */
+  roles?: readonly UserRole[];
   onApprove: (approverName: string) => void;
   onClose: () => void;
 }
 
-export function ApproverDialog({ title, blurb, onApprove, onClose }: Props) {
+export function ApproverDialog({ title, blurb, roles = ['Admin'], onApprove, onClose }: Props) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const who = roles.join(' or ');
 
   const submit = async () => {
     const account = useUserStore.getState().findByUsername(username);
-    if (!account || account.role !== 'Admin' || account.status !== 'Active' || isLockedOut(account)) {
-      setError('An active Admin must approve this (§32).');
+    if (!account || !roles.includes(account.role) || account.status !== 'Active' || isLockedOut(account)) {
+      setError(`An active ${who} must approve this.`);
       return;
     }
     const ok = await verifyPassword(password, account.passwordSalt, account.passwordHash);
     if (!ok) {
-      setError('The approver password is not correct (§32).');
+      setError('The approver password is not correct.');
       return;
     }
     onApprove(account.name);
@@ -55,7 +62,7 @@ export function ApproverDialog({ title, blurb, onApprove, onClose }: Props) {
         </DialogHeader>
         <DialogBody className="space-y-3">
           <div className="space-y-1.5">
-            <Label>Admin username *</Label>
+            <Label>{who} username *</Label>
             <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
           </div>
           <div className="space-y-1.5">

@@ -90,7 +90,7 @@ export default function AddFeeDemand() {
       return;
     }
     // §7.6: a struck-off student is not billed a new fee charge.
-    const blocker = postingBlocker('FeeCharge', { struckOff: student.struckOff, completed: false });
+    const blocker = postingBlocker('FeeCharge', { struckOff: student.struckOff, completed: student.completed ?? false, onLeave: student.onLeave ?? false });
     if (blocker) { setError(blocker); return; }
     const termLabel = getTermLabel(subDef?.course.system ?? 'semester', semester);
     // One fee charge per student per term (§5). The entry carries a term, not a

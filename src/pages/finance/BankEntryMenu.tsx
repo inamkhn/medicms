@@ -43,7 +43,7 @@ import {
   type OtherReceiptKind,
 } from '@/lib/finance';
 
-type MenuAction = 'charge' | 'receipt' | 'withdrawal';
+export type MenuAction = 'charge' | 'receipt' | 'withdrawal';
 
 interface ActionMeta {
   kind: HandEntryKind;
@@ -84,13 +84,20 @@ const ACTIONS: Record<MenuAction, ActionMeta> = {
 };
 
 /** One dialog for the three typed hand entries — the fields that differ are a
- *  reason, an other-receipt kind, and the label the §71 table gives each. */
-function HandEntryDialog({ account, action, onClose }: { account: MoneyAccount; action: MenuAction; onClose: () => void }) {
+ *  reason, an other-receipt kind, and the label the §71 table gives each.
+ *  Exported so the reconciliation workspace opens the same dialog with the
+ *  statement line's amount and date already typed (§67.2 "Create entry"). */
+export function HandEntryDialog({ account, action, onClose, prefill }: {
+  account: MoneyAccount;
+  action: MenuAction;
+  onClose: () => void;
+  prefill?: { amount?: number; date?: string };
+}) {
   const meta = ACTIONS[action];
   const limits = useSettingsStore((s) => s.financeLimits);
 
-  const [amount, setAmount] = useState('');
-  const [date, setDate] = useState(dayKey());
+  const [amount, setAmount] = useState(prefill?.amount ? String(prefill.amount) : '');
+  const [date, setDate] = useState(prefill?.date ?? dayKey());
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
   const [receiptKind, setReceiptKind] = useState<OtherReceiptKind>(OTHER_RECEIPT_KINDS[0]);

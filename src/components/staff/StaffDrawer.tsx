@@ -420,9 +420,12 @@ export function StaffDrawer({ open, mode, staff, onOpenChange }: StaffDrawerProp
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Preferred payout mode" htmlFor="payoutPreference" error={errors.payoutPreference}>
-                    <Select value={draft.payoutPreference || undefined} onValueChange={(v) => set('payoutPreference', v as PayoutMode)}>
+                    {/* §48 optional: a chosen mode must be clearable back to "Not set", and
+                        the value stays controlled ('' would flip it uncontrolled). */}
+                    <Select value={draft.payoutPreference || '__none'} onValueChange={(v) => set('payoutPreference', v === '__none' ? '' : (v as PayoutMode))}>
                       <SelectTrigger id="payoutPreference"><SelectValue placeholder="Not set" /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="__none">Not set</SelectItem>
                         {PAYOUT_MODES.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
                       </SelectContent>
                     </Select>

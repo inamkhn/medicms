@@ -64,7 +64,7 @@ export default function AddCharge() {
     // §7.6: a struck-off student is not charged more. §7.7 lets a certificate-style
     // special charge through for a student who has finished, which is why only the
     // struck-off case is passed here.
-    const blocker = postingBlocker('SpecialCharge', { struckOff: student.struckOff, completed: false });
+    const blocker = postingBlocker('SpecialCharge', { struckOff: student.struckOff, completed: student.completed ?? false, onLeave: student.onLeave ?? false });
     if (blocker) { setError(blocker); return; }
     setLoading(true);
     const userName = useAuthStore.getState().user?.name ?? 'Admin';

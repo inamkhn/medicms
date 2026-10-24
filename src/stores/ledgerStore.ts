@@ -3,8 +3,10 @@
 //
 // The student ledger is a list of typed entries (§5), and it is append-only
 // (§7.1: "Entries are never edited or deleted. A mistake is fixed with a
-// reversal"). So this store has no update and no remove: there is `postEntries`,
-// which either takes the whole batch or writes nothing.
+// reversal"). So this store has no update: there is `postEntries`, which either
+// takes the whole batch or writes nothing. `removeEntries` exists for one
+// sanctioned exception — §23.7 undo-import, which removes exactly the entries
+// that one import posted and nothing else.
 //
 // Nothing here does arithmetic. Balance, unpaid charges and the §5 rules all live
 // in src/lib/ledger, so a screen cannot disagree with the ledger check.
@@ -35,6 +37,8 @@ interface LedgerState {
    * core never reads a clock (§7.4 needs it to refuse a future-dated payment).
    */
   postEntries: (batch: readonly LedgerEntry[], today: string) => PostOutcome;
+  /** §23.7: undo-import removes exactly the entries that import posted. */
+  removeEntries: (ids: readonly string[]) => void;
   getByStudent: (sno: number) => LedgerEntry[];
   /** The number the next entry of this student will take (§5). */
   nextEntryNo: (sno: number) => number;
@@ -68,6 +72,11 @@ export const useLedgerStore = create<LedgerState>()(
         const stamped = withStoredBalances(existing, batch);
         set((state) => ({ entries: [...state.entries, ...stamped] }));
         return { ok: true, rejected: [] };
+      },
+
+      removeEntries: (ids) => {
+        const gone = new Set(ids);
+        set((state) => ({ entries: state.entries.filter((entry) => !gone.has(entry.id)) }));
       },
 
       getByStudent: (sno) => get().entries.filter((entry) => entry.studentSno === sno),

@@ -15,6 +15,7 @@ import {
   bankChargeEntry,
   chequeClearedEntry,
   chequesInHandTotal,
+  clearedChequesThisMonth,
   dayCloseDifference,
   handEntryProblems,
   incomingChequeRows,
@@ -159,7 +160,7 @@ describe('a held cheque waits, clears or bounces (§8, §17, §18)', () => {
   it('the register lists it in hand, and it is nobody\'s balance yet', () => {
     const rows = incomingChequeRows(ACCOUNTS, books);
     equal(rows.length, 1);
-    equal(rows[0]?.status, 'In hand');
+    equal(rows[0]?.status, 'Received');
     equal(chequesInHandTotal(rows), 38_000);
     equal(accountBalance(books, 'acc-bank'), 1_172_000);
   });
@@ -349,5 +350,46 @@ describe('the four hand entries at the bank (§20, §33, §60.2, §71)', () => {
     ok(handEntryProblems({ kind: 'OwnerWithdrawal', role: 'Admin', amount: 1 }, DEFAULT_FINANCE_LIMITS)
       .some((p) => p.includes('needs a reason')));
     deepStrictEqual(handEntryProblems({ kind: 'OwnerWithdrawal', role: 'Admin', amount: 50_000, reason: 'Personal use' }, DEFAULT_FINANCE_LIMITS), []);
+  });
+});
+
+describe('a held cheque moves through its states (§34, §58)', () => {
+  const held = paymentMoneyEntry(
+    { accountId: 'acc-cheques', amount: 38_000, mode: 'Cheque', payee: 'Sara (SNO 9)', receiptNo: 'R-1044', moneyRef: '004801', date: DATE, createdBy: 'Clerk' },
+    SERIES,
+  );
+  const books = [...OPENINGS, held];
+
+  it('a deposit turns Received into Deposited, still nobody\'s balance (§34, §35)', () => {
+    const rows = incomingChequeRows(ACCOUNTS, books, [{ heldId: held.id, bankAccountId: 'acc-bank', date: '2026-10-07' }]);
+    equal(rows[0]?.status, 'Deposited');
+    equal(rows[0]?.deposit?.bankAccountId, 'acc-bank');
+    equal(chequesInHandTotal(rows), 38_000);
+    equal(accountBalance(books, 'acc-bank'), 1_172_000);
+  });
+
+  it('clearedChequesThisMonth counts only clearings in that month (§58)', () => {
+    const cleared = chequeClearedEntry(
+      held,
+      { bankAccountId: 'acc-bank', date: '2026-10-12', createdBy: 'Accountant' },
+      { ...SERIES, entryNo: 11, actionNo: 7 },
+    );
+    const rows = incomingChequeRows(ACCOUNTS, [...books, cleared]);
+    deepStrictEqual(clearedChequesThisMonth(rows, '2026-10'), { count: 1, amount: 38_000 });
+    deepStrictEqual(clearedChequesThisMonth(rows, '2026-11'), { count: 0, amount: 0 });
+  });
+
+  it('a reversal marked Returned reads as Returned, not Bounced (§34)', () => {
+    const returned = {
+      ...voidPaymentEntry(
+        held,
+        { date: '2026-10-09', reason: 'Student took the cheque back', createdBy: 'Counter' },
+        { ...SERIES, entryNo: 11, actionNo: 7 },
+      ),
+      outcome: 'Returned' as const,
+    };
+    const rows = incomingChequeRows(ACCOUNTS, [...books, returned]);
+    equal(rows[0]?.status, 'Returned');
+    equal(chequesInHandTotal(rows), 0);
   });
 });

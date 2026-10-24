@@ -42,9 +42,12 @@ import {
 } from '@/lib/ledger';
 import type { LedgerEntry, LedgerEntryType } from '@/types';
 import { canWrite } from '@/stores/authStore';
+import { can } from '@/lib/permissions';
 import { useAuthStore, useStudentStore, useLedgerStore, useSettingsStore } from '@/stores';
 import { EntryTypeBadge } from '@/components/ledger/EntryTypeBadge';
+import { VoidReceiptDialog } from '@/components/ledger/VoidReceiptDialog';
 import { SignedAmount } from '@/components/ledger/SignedAmount';
+import { StatementDialog } from '@/components/receipts/StatementDialog';
 
 /** §54's Period filter, as the number of days back it looks. */
 type Period = 'all' | '30' | '90' | 'year';
@@ -71,6 +74,8 @@ export default function StudentLedger() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuthStore();
   const canEdit = canWrite(user?.role);
+  // §27.1: voiding a receipt is Admin/Accountant only — the shared matrix decides.
+  const canVoidReceipt = can(user?.role, 'payment.void');
   // New-row flash after write actions (?highlight=entryId, ~1.5s) — highlightId is the single source, no mirrored state
   const highlightId = searchParams.get('highlight');
   useEffect(() => {
@@ -84,6 +89,9 @@ export default function StudentLedger() {
   // §54: reversed rows are visible by default and the filter is what hides them.
   const [showReversed, setShowReversed] = useState(true);
   const [openLines, setOpenLines] = useState<string[]>([]);
+  const [voidTarget, setVoidTarget] = useState<LedgerEntry | null>(null);
+  // §55: Print statement opens its own dialog — every role may print one (§3).
+  const [showStatement, setShowStatement] = useState(false);
 
   const students = useStudentStore((s) => s.students);
   const entries = useLedgerStore((s) => s.entries);
@@ -296,6 +304,20 @@ export default function StudentLedger() {
                           </button>
                         )}
                         {reversedTarget && <span className="text-ink-muted">Reversal of #{reversedTarget.entryNo}</span>}
+                        {cancelledBy && entry.type === 'Payment' && (
+                          <span className="rounded-pill border border-danger/30 bg-danger/5 px-1.5 text-micro font-semibold text-danger">
+                            VOID
+                          </span>
+                        )}
+                        {canVoidReceipt && entry.type === 'Payment' && !cancelledBy && (
+                          <button
+                            className="text-dues hover:underline"
+                            onClick={() => setVoidTarget(entry)}
+                            title="Void this receipt — a linked reversal, never a deletion (§27.1)"
+                          >
+                            Void
+                          </button>
+                        )}
                         {showReference && (
                           <button
                             className="text-accent hover:underline tabular-nums whitespace-nowrap"
@@ -400,12 +422,20 @@ export default function StudentLedger() {
             <CreditCard size={12} className="mr-1.5" />
             Payment
           </Button>
-          <Button variant="outline" size="sm" className="h-control-sm text-meta print:hidden" onClick={() => window.print()}>
-            <Printer size={12} className="mr-1.5" />
-            Print Statement
-          </Button>
         </div>
       )}
+
+      {/* §3: every role that can read the ledger can print a statement; §55 puts
+          the period and layout in a dialog, not on the screen. */}
+      <div className="flex flex-wrap gap-1.5 print:hidden">
+        <Button variant="outline" size="sm" className="h-control-sm text-meta" onClick={() => setShowStatement(true)}>
+          <Printer size={12} className="mr-1.5" />
+          Print statement
+        </Button>
+      </div>
+
+      {showStatement && <StatementDialog student={student} onClose={() => setShowStatement(false)} />}
+      {voidTarget && <VoidReceiptDialog payment={voidTarget} onClose={() => setVoidTarget(null)} />}
     </div>
   );
 }

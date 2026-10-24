@@ -16,9 +16,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn, formatPKR } from '@/lib/utils';
-import { greeting, longDate } from '@/lib/dates';
+import { greeting, longDate, dayKey } from '@/lib/dates';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
-import { computeDashboardMetrics, type AttentionItem } from '@/lib/dashboardMetrics';
+import { computeDashboardMetrics, type AttentionItem, type ReceiptStock } from '@/lib/dashboardMetrics';
+import { bookSummaries, receiptFactsOf } from '@/lib/receipts';
 import { can } from '@/stores';
 import {
   useUIStore, useAuthStore, useStudentStore, useLedgerStore, useBankStore,
@@ -81,6 +82,8 @@ export default function Dashboard() {
   const expenses = useExpenseStore((s) => s.expenses);
   const budgets = useBudgetStore((s) => s.budgets);
   const books = useReceiptBookStore((s) => s.books);
+  const bookEvents = useReceiptBookStore((s) => s.events);
+  const reprints = useReceiptBookStore((s) => s.reprints);
   const batches = useBatchStore((s) => s.batches);
   const templates = useFeeTemplateStore((s) => s.templates);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
@@ -91,10 +94,21 @@ export default function Dashboard() {
   const instituteAddress = useSettingsStore((s) => s.instituteAddress);
   const institutePhone = useSettingsStore((s) => s.institutePhone);
 
+  // Overdue is measured against the local calendar day — the same `today` the
+  // directory and the ledger use (§15).
+  const today = dayKey();
+
   const metrics = useMemo(() => {
     const withBalance = getStudentsWithBalanceLive(students, ledger).filter(
       (s) => showTestRecords || !s.isTestRecord,
     );
+    // §24 the low-stock warning reads the register, so "8 receipts left" means the
+    // same thing here, on the receipts screen and at the payment counter.
+    const bookStock: ReceiptStock[] = bookSummaries(
+      books,
+      books.flatMap((book) => receiptFactsOf(ledger, book, new Map(Object.entries(reprints)))),
+      bookEvents,
+    ).map((slot) => ({ id: slot.book.id, name: slot.book.name, left: slot.summary.left }));
     return computeDashboardMetrics({
       // §18 scopes the dashboard to the counter operator only: they see their own
       // receipts and no money-in-the-bank figures. A Viewer sees every figure but
@@ -103,16 +117,17 @@ export default function Dashboard() {
       seesOwnOnly: role === 'Counter',
       seesMoney: role !== 'Counter',
       userName: user?.name ?? '',
+      today,
       students: withBalance,
       ledger,
       bank: bankTxs,
       expenses,
       budgets,
-      books,
+      books: bookStock,
       batches,
       templates,
     });
-  }, [students, ledger, bankTxs, expenses, budgets, books, batches, templates, showTestRecords, role, user?.name]);
+  }, [students, ledger, bankTxs, expenses, budgets, books, bookEvents, reprints, batches, templates, showTestRecords, role, user?.name, today]);
 
   const m = metrics;
   const canAct = can(role, 'student.admit'); // Viewer has no write capability at all (§18)
@@ -196,10 +211,22 @@ export default function Dashboard() {
               onClick={go('/students?status=dues&sort=balance')}
             />
             <StatTile
+              label="Of which overdue"
+              value={formatPKR(m.overdueDues)}
+              tone="dues"
+              onClick={go('/students?status=overdue&sort=balance')}
+            />
+            <StatTile
               label="Credit held"
               value={formatPKR(m.creditHeld)}
               tone="credit"
               onClick={go('/students?status=credit')}
+            />
+            <StatTile
+              label="Struck-off dues"
+              value={formatPKR(m.struckOffDues)}
+              tone="muted"
+              onClick={go('/students?status=struck_off')}
             />
             <StatTile label="Collected this month" value={formatPKR(m.collectedThisMonth)} />
           </CardContent>
@@ -246,14 +273,14 @@ export default function Dashboard() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-3 px-4 py-2">
             <SectionLabel>Top defaulters (active)</SectionLabel>
-            <Button variant="ghost" size="sm" onClick={go('/students?status=dues&sort=balance')}>
+            <Button variant="ghost" size="sm" onClick={go('/students?status=overdue&sort=balance')}>
               View all
               <ChevronRight size={14} className="ml-1" />
             </Button>
           </CardHeader>
           <CardContent className="p-2 pt-0">
             {m.topDefaulters.length === 0 ? (
-              <EmptyRow>No active student has dues right now.</EmptyRow>
+              <EmptyRow>No active student has overdue dues right now.</EmptyRow>
             ) : (
               m.topDefaulters.map((s) => (
                 <button
@@ -268,7 +295,10 @@ export default function Dashboard() {
                       SNO:{s.sno} · {s.batch} · {s.semester} term
                     </span>
                   </span>
-                  <span className="flex-none text-body font-semibold text-dues">{formatPKR(s.computedBalance)}</span>
+                  <span className="flex-none text-right">
+                    <span className="block text-body font-semibold text-dues">{formatPKR(s.overdue)}</span>
+                    <span className="block text-micro text-ink-muted">{s.daysOverdue} days</span>
+                  </span>
                 </button>
               ))
             )}

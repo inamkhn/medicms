@@ -19,6 +19,7 @@ import type { MoneyEntry } from './types.ts';
 import type { Bill, BillPayment } from './bills.ts';
 import type { Vendor } from './vendors.ts';
 import type { PaymentVoucher } from './vouchers.ts';
+import type { RecurringBill } from './recurring.ts';
 
 const PREPARED_BY = 'Admin Khalid';
 
@@ -232,6 +233,29 @@ export const DEMO_MONEY_ENTRIES: MoneyEntry[] = [
     amount: 55_000, kind: 'BillPayment', payee: 'Zamzam General Store',
     reference: 'PV-0005', linkedDoc: 'PV-0005', actionId: 'a-10',
     createdBy: PREPARED_BY, cleared: true, reconciled: false, createdAt: '2026-10-08T11:25:00',
+  },
+];
+
+/**
+ * §28: the regular costs the sample reminds about. Rent and electricity were
+ * entered for October already (their bills are B-0002 and B-0003), so only the
+ * internet reminder — an amount typed each time — is waiting.
+ */
+export const DEMO_RECURRING: RecurringBill[] = [
+  {
+    id: 'rb-1', vendorId: 'v-2', categoryId: 'cat-rent',
+    description: 'Building rent — monthly', amount: 150_000, dayOfMonth: 10,
+    active: true, createdBy: PREPARED_BY, createdAt: '2026-08-01T09:00:00', lastUsedMonth: '2026-10',
+  },
+  {
+    id: 'rb-2', vendorId: 'v-3', categoryId: 'cat-utilities-electric',
+    description: 'Electricity — monthly reading', dayOfMonth: 2,
+    active: true, createdBy: PREPARED_BY, createdAt: '2026-08-01T09:00:00', lastUsedMonth: '2026-10',
+  },
+  {
+    id: 'rb-3', vendorId: 'v-3', categoryId: 'cat-utilities-internet',
+    description: 'Internet and phone — monthly', dayOfMonth: 26,
+    active: true, createdBy: PREPARED_BY, createdAt: '2026-08-01T09:00:00', lastUsedMonth: '2026-09',
   },
 ];
 

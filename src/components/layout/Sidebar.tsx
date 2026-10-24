@@ -6,7 +6,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Users, UserPlus, BookOpen, CreditCard,
   FileText, Receipt, Building2, History, Settings, Database, LogOut, Layers,
-  ChevronsLeft, ChevronsRight, ShieldCheck, Landmark, ArrowLeftRight, CalendarCheck, ScrollText, Store, Inbox, Undo2, Wallet, Briefcase, ClipboardList, HandCoins, Banknote, Gauge, FileSpreadsheet
+  ChevronsLeft, ChevronsRight, ShieldCheck, Landmark, ArrowLeftRight, CalendarCheck, CalendarRange, ScrollText, Store, Inbox, Undo2, Wallet, Briefcase, ClipboardList, HandCoins, Banknote, Gauge, FileSpreadsheet, PieChart, Lock
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { can, type Permission } from '@/lib/permissions';
@@ -29,28 +29,46 @@ const MAIN_ITEMS: NavItem[] = [
 ];
 
 const FINANCE_ITEMS: NavItem[] = [
-  { to: '/ledger', label: 'Fee Ledger', icon: BookOpen, end: true },
-  { to: '/ledger/bulk-demand', label: 'Batch Promotion', icon: Receipt, perm: 'ledger.adjust' },
+  // PAYMENTS_RECEIPTS_LEDGER_DESIGN §50: the money-in half of the Finance group —
+  // Payments, Receipts, Cheques, the fee ledger, the day book and the day close.
+  // §50's Expenses and Bank are the Money group's "Bills and expenses" and
+  // "Accounts" below, so they are not listed twice; receipt books sit under
+  // Settings (§57).
   { to: '/payments/record', label: 'Payments', icon: CreditCard, shortcut: 'Ctrl+P', perm: 'payment.record' },
+  { to: '/receipts', label: 'Receipts', icon: Receipt, perm: 'receipts.view' },
+  { to: '/cheques', label: 'Cheques', icon: ScrollText, perm: 'cheques.view' },
+  { to: '/ledger', label: 'Fee Ledger', icon: BookOpen, end: true },
+  { to: '/day-book', label: 'Day book', icon: CalendarRange, perm: 'daybook.view' },
   { to: '/finance/day-close', label: 'Day close', icon: CalendarCheck, perm: 'payment.record' },
+  { to: '/ledger/bulk-demand', label: 'Batch Promotion', icon: Receipt, perm: 'ledger.adjust' },
   { to: '/fee-templates', label: 'Fee Templates', icon: Receipt, perm: 'feeTemplate.manage' },
 ];
 
 // The money accounts of the finance core (§58). Counter operators see none of
 // it — "the Finance area is split into two groups. Counter operators only see
-// the first" — the day close above is theirs and lives in FEES. Pay out sits
-// under its own write permission (§57); the register is readable by anyone who
-// reads the money books.
+// the first" — the day close above is theirs and lives in FEES. The first ten
+// items are §58's own list in its own order; the §67 screens the doc reaches
+// from the account page and the registers follow them. Pay out sits under its
+// own write permission (§57); the registers are readable by anyone who reads
+// the money books, and reconciliation needs finance.reconcile (§3).
 const MONEY_ITEMS: NavItem[] = [
+  { to: '/finance', label: 'Overview', icon: Gauge, perm: 'finance.view', end: true },
   { to: '/finance/bills', label: 'Bills and expenses', icon: Receipt, perm: 'finance.view' },
-  { to: '/finance/vendors', label: 'Vendors', icon: Store, perm: 'finance.view' },
   { to: '/finance/pay', label: 'Pay out', icon: CreditCard, perm: 'finance.pay' },
-  { to: '/finance/vouchers', label: 'Vouchers', icon: FileText, perm: 'finance.view' },
+  { to: '/finance/vendors', label: 'Vendors', icon: Store, perm: 'finance.view' },
   { to: '/finance/accounts', label: 'Accounts', icon: Landmark, perm: 'finance.view' },
+  // §42: an import and a month's matching live behind one entry — the bare
+  // address picks the account (§67.2).
+  { to: '/finance/reconcile', label: 'Bank and reconciliation', icon: FileSpreadsheet, perm: 'finance.reconcile' },
+  { to: '/finance/cheques', label: 'Issued cheques', icon: ScrollText, perm: 'finance.view' },
+  { to: '/finance/budgets', label: 'Budgets', icon: PieChart, perm: 'finance.view' },
+  { to: '/finance/reports', label: 'Reports', icon: FileText, perm: 'finance.view' },
+  { to: '/finance/month-close', label: 'Month close', icon: Lock, perm: 'finance.view' },
+  // §29/§10/§17: the registers and the two transfer screens.
+  { to: '/finance/vouchers', label: 'Vouchers', icon: FileText, perm: 'finance.view' },
   { to: '/finance/petty-cash', label: 'Petty cash', icon: Wallet, perm: 'finance.petty' },
   { to: '/finance/transfer', label: 'Transfer', icon: ArrowLeftRight, perm: 'finance.transfer' },
   { to: '/finance/deposit', label: 'Cash deposit', icon: Building2, perm: 'finance.transfer' },
-  { to: '/finance/cheques', label: 'Issued cheques', icon: ScrollText, perm: 'finance.view' },
   // §8/§17/§18 money held for others, and §33 money out to a student — the two
   // automatic flows whose entries now have a screen to be created from.
   { to: '/finance/cheques-incoming', label: 'Cheques in hand', icon: Inbox, perm: 'finance.view' },

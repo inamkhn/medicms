@@ -25,11 +25,29 @@ interface SettingsState {
    */
   termsPerYearByProgram: Partial<Record<ProgramCode, number>>;
   /**
+   * §26.3/§27.5: the fee offered when a struck-off student is reinstated —
+   * the reinstatement screen pre-fills it; 0 means no fee is suggested.
+   */
+  reAdmissionFee: number;
+  setReAdmissionFee: (v: number) => void;
+  /**
+   * §27.3: how many days after admission a cancellation may be made without an
+   * Admin override. Default 7; 0 means same-day only.
+   */
+  cancellationWindowDays: number;
+  setCancellationWindowDays: (v: number) => void;
+  /**
    * §77: the entry limits, from their defaults. Each screen that owns one
    * (pay out, petty vouchers, bill images, cash warnings) checks this value —
    * the Settings page is the only place that changes it.
    */
   financeLimits: FinanceLimits;
+  /** §77: "Accept exact statement matches automatically" — off by default (§81.5). */
+  financeAutoAcceptMatches: boolean;
+  setFinanceAutoAcceptMatches: (v: boolean) => void;
+  /** §77: the prefix every payment voucher number starts with. */
+  voucherPrefix: string;
+  setVoucherPrefix: (v: string) => void;
   /**
    * §60: the payroll prefixes and screen defaults. Each mint or form that owns
    * one reads it at create time — nothing stored rewrites an approved record.
@@ -57,7 +75,18 @@ export const useSettingsStore = create<SettingsState>()(
       accountNo: '5533-0081-000190-01-1',
       paperSize: '80mm',
       termsPerYearByProgram: {},
+      reAdmissionFee: 0,
+      cancellationWindowDays: 7,
       financeLimits: DEFAULT_FINANCE_LIMITS,
+      financeAutoAcceptMatches: false,
+      setFinanceAutoAcceptMatches: (v) => set({ financeAutoAcceptMatches: v }),
+      voucherPrefix: 'PV-',
+      // §77: letters, digits and one trailing dash — a blank leaves the old prefix.
+      setVoucherPrefix: (v) => set((s) => {
+        const cleaned = v.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').replace(/-+/g, '-').replace(/^-/, '');
+        if (!cleaned) return { voucherPrefix: s.voucherPrefix };
+        return { voucherPrefix: cleaned.endsWith('-') ? cleaned : `${cleaned}-` };
+      }),
       payrollSettings: DEFAULT_PAYROLL_SETTINGS,
       setInstitute: (instituteName, instituteAddress, institutePhone) =>
         set({ instituteName, instituteAddress, institutePhone }),
@@ -99,6 +128,8 @@ export const useSettingsStore = create<SettingsState>()(
         else next[program] = Math.trunc(termsPerYear);
         return { termsPerYearByProgram: next };
       }),
+      setReAdmissionFee: (v) => set({ reAdmissionFee: Number.isInteger(v) && v > 0 ? v : 0 }),
+      setCancellationWindowDays: (v) => set({ cancellationWindowDays: Number.isInteger(v) && v >= 0 ? v : 7 }),
     }),
     {
       name: 'medicms-settings',

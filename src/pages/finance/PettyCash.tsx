@@ -195,6 +195,7 @@ function NewVoucherDialog({ petty, onClose }: { petty: MoneyAccount; onClose: ()
   const vouchers = useBillsStore((s) => s.vouchers);
   const categories = useBillsStore((s) => s.categories);
   const limits = useSettingsStore((s) => s.financeLimits);
+  const voucherPrefix = useSettingsStore((s) => s.voucherPrefix);
   const role = useAuthStore((s) => s.user?.role);
   const userName = useAuthStore((s) => s.user?.name ?? 'Admin');
 
@@ -216,7 +217,7 @@ function NewVoucherDialog({ petty, onClose }: { petty: MoneyAccount; onClose: ()
     chequebooks: [], cheques: [], closedMonths,
     role: role ?? '', today: dayKey(), now: nowISO(), limits,
     maxBackDateDays: role === 'Accountant' ? limits.accountantBackDateDays : undefined,
-    series: { entryNo: nextMoneyEntryNo(entries), actionNo: nextActionNo(entries), voucherNo: nextVoucherNo(vouchers) },
+    series: { entryNo: nextMoneyEntryNo(entries), actionNo: nextActionNo(entries), voucherNo: nextVoucherNo(vouchers, voucherPrefix) },
   });
 
   const post = (approvedBy?: string) => {
@@ -418,6 +419,18 @@ function CountDialog({ petty, onClose }: { petty: MoneyAccount; onClose: () => v
       const outcome = useMoneyStore.getState().postEntries(result.entries, dayKey());
       if (!outcome.ok) { setErrors(outcome.rejected.flatMap((r) => r.problems)); return; }
     }
+    // §48.2.3: an even count leaves no entry, so the count itself is kept —
+    // the month close reads it to tick item 3 (§69).
+    useMoneyStore.getState().savePettyCount({
+      date: dayKey(),
+      accountId: petty.id,
+      expected: result.expected,
+      counted: countedNum,
+      difference: result.difference,
+      note: note.trim() || undefined,
+      countedBy: userName,
+      at: nowISO(),
+    });
     useAuditStore.getState().addLog({ user: userName, action: 'Finance Entry', details: `Petty cash count ${formatPKR(countedNum)} · difference ${formatPKR(result.difference)}` });
     onClose();
   };

@@ -117,10 +117,14 @@
   --dur-slow: 240ms;
 
   /* Layering — replaces ad-hoc z-[60]. Exposed as @utility z-* below.
-     --z-dropdown is 30, not 10, on purpose: menus and selects portal to the end of
-     <body> but share the root stacking context with the sticky table header at 20, so
-     a lower value made every popup opened over a table disappear behind it. */
-  --z-dropdown: 30;
+     --z-dropdown is 65 on purpose: menus and selects portal to the end of <body>
+     and must beat BOTH the sticky table header at 20 (so a popup opened over a
+     table is not hidden) and the dialog layer — overlay 40 / modal 60 — because a
+     select opened inside a dialog portals into the root stacking context, and at
+     any value below 60 its list sat behind the scrim: clicking it hit the overlay
+     and dismissed the dialog instead of choosing the option. 65 keeps it under
+     toasts (70) and tooltips (80), which must still float above an open list. */
+  --z-dropdown: 65;
   --z-sticky: 20;
   --z-overlay: 40;
   --z-modal: 60;

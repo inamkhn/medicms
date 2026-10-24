@@ -100,6 +100,24 @@ export interface PettyCountPosting {
 }
 
 /**
+ * §48.2.3/§69 item 3: the record a count leaves behind. An even count posts no
+ * entry, so the month close could never see it in the books; the record is kept
+ * beside them, exactly as a day closing is (§11).
+ */
+export interface PettyCount {
+  /** Local date `YYYY-MM-DD` of the count. */
+  date: string;
+  accountId: string;
+  expected: number;
+  counted: number;
+  difference: number;
+  note?: string;
+  countedBy: string;
+  /** ISO timestamp; the caller's clock, the core never reads one. */
+  at: string;
+}
+
+/**
  * §10: a count compares the counted cash with the expected balance and, when
  * they differ, creates the Cash difference entry that makes the account equal
  * the count — a shortage money out, an excess money in. Refused for a non-petty

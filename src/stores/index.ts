@@ -8,6 +8,7 @@ export { can, canWrite, ROLE_PERMISSIONS } from '@/lib/permissions';
 export { useSyncStore, getSyncIndicator } from './syncStore';
 export { useUIStore } from './uiStore';
 export { useStudentStore, getNextSno } from './studentStore';
+export { useImportStore } from './importStore';
 export { useLedgerStore } from './ledgerStore';
 export type { PostOutcome } from './ledgerStore';
 export { useMoneyStore } from './moneyStore';

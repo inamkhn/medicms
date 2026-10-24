@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { SESSION_OPTIONS, getSubCourseDef } from '@/lib/constants';
-import { formatPKR, getTermLabel } from '@/lib/utils';
+import { formatPKR, formatDate, getTermLabel } from '@/lib/utils';
 import { todayISO } from '@/lib/txn';
 import { getNextTerm, getPromotionFee, termIndexOf } from '@/lib/promotion';
 import { termFeesOf, templateTotalOf } from '@/lib/fee/templateCompat';
@@ -63,7 +63,9 @@ export default function PromoteStudent() {
   const targetTotal = targetTemplate && targetTerm !== null ? templateTotalOf(targetTemplate, targetTerm) : 0;
   const fee = amount === null ? defaultFee : parseFloat(amount) || 0;
 
-  if (!nextTerm) {
+  // §26.5: a completed or on-leave student is never promoted; both also hit the
+  // posting gate below, so a typed address fails the same way as the hidden button.
+  if (!nextTerm || student.completed || student.onLeave) {
     return (
       <div className="w-auto space-y-6">
         <div className="flex items-center gap-4">
@@ -74,7 +76,13 @@ export default function PromoteStudent() {
         </div>
         <Card>
           <CardContent className="py-8 text-center">
-            <div className="font-medium text-slate-900">{student.name} has completed {getTermLabel(subDef.course.system, student.semester)} — the final term for {subDef.course.label}.</div>
+            <div className="font-medium text-slate-900">
+              {student.onLeave
+                ? `${student.name} is on leave${student.leaveReturnDate ? ` — expected return ${formatDate(student.leaveReturnDate)}` : ''}. No promotion while away (§26.5).`
+                : student.completed
+                  ? `${student.name} has been marked completed — no further promotion.`
+                  : `${student.name} has completed ${getTermLabel(subDef.course.system, student.semester)} — the final term for ${subDef.course.label}.`}
+            </div>
             <div className="text-sm text-slate-500 mt-1">No further promotion available.</div>
             <Button variant="outline" size="sm" className="mt-4" onClick={() => navigate(`/students/${student.sno}`)}>
               Back to Profile
@@ -99,7 +107,7 @@ export default function PromoteStudent() {
     // §7.6 blocks a new charge for a struck-off student. §7.7's completed case is the
     // "no further promotion available" screen above: a final-term student has no next
     // term to be billed for.
-    const blocker = postingBlocker('FeeCharge', { struckOff: student.struckOff, completed: !nextTerm });
+    const blocker = postingBlocker('FeeCharge', { struckOff: student.struckOff, completed: student.completed || !nextTerm, onLeave: student.onLeave });
     if (blocker) {
       setError(blocker);
       return;

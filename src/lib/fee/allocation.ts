@@ -106,3 +106,40 @@ export function releaseAllocation(
     return { ...c, allocated: Math.max(0, (c.allocated ?? 0) - back) };
   });
 }
+
+/** One charge a void would reopen, with its unpaid figure before and after (§27.1). */
+export interface ReleaseRow {
+  chargeId: string;
+  label: string;
+  /** Rupees of this payment that sat on the charge and come off it again. */
+  released: number;
+  unpaidBefore: number;
+  unpaidAfter: number;
+}
+
+/**
+ * §27.1: laying out a void, the screen has to say what reopening means — which
+ * charges the receipt paid, and what each owes once the allocation is released.
+ * `releaseAllocation` does the state change; this names the effect per charge.
+ */
+export function releasePreview(
+  charges: readonly PostedCharge[],
+  allocations: readonly Allocation[],
+): ReleaseRow[] {
+  const next = new Map(releaseAllocation(charges, allocations).map((c) => [c.id, c]));
+  const rows: ReleaseRow[] = [];
+  for (const allocation of allocations) {
+    if (allocation.amount <= 0) continue;
+    const before = charges.find((c) => c.id === allocation.chargeId);
+    const after = before ? next.get(before.id) : undefined;
+    if (!before || !after) continue;
+    rows.push({
+      chargeId: before.id,
+      label: before.label,
+      released: allocation.amount,
+      unpaidBefore: unpaidOf(before),
+      unpaidAfter: unpaidOf(after),
+    });
+  }
+  return rows;
+}

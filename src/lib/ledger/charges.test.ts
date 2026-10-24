@@ -12,6 +12,7 @@ import type { LedgerEntry, LedgerEntryType } from './types.ts';
 import { entryId } from './entries.ts';
 import { liveBalanceOf } from './balance.ts';
 import {
+  ageingByStudent,
   ageingOf,
   allocationLabels,
   chargeStateOf,
@@ -483,5 +484,27 @@ describe('one student\'s money never touches another\'s (§5)', () => {
         `student ${sno}`,
       );
     }
+  });
+});
+
+describe('ageingByStudent — one pass for the lists (§14, §22.3)', () => {
+  // A second student sharing no money with Bilal: one current charge, nothing due.
+  const other = { ...charge(1, 1, 20_000, '2026-10-01', '2026-10-23'), studentSno: 2, id: 'e-2-1' };
+  const map = ageingByStudent([...BILAL, other], '2026-10-09');
+
+  it('summarises each student from their own charges', () => {
+    equal(map.get(SNO)?.overdue, 53_000);
+    equal(map.get(SNO)?.oldestDays, 81);
+    equal(map.get(SNO)?.oldestDueDate, '2026-07-20');
+    equal(map.get(2)?.overdue, 0);
+    equal(map.get(2)?.oldestDueDate, null);
+    equal(map.get(2)?.buckets.notYetDue, 20_000);
+  });
+
+  it('keeps a charge that falls due today out of the overdue figure', () => {
+    const dueToday = [
+      { ...charge(1, 1, 5_000, '2026-10-09', '2026-10-09'), studentSno: 3, id: 'e-3-1' },
+    ];
+    equal(ageingByStudent(dueToday, '2026-10-09').get(3)?.overdue, 0);
   });
 });

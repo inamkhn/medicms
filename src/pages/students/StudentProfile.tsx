@@ -10,6 +10,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, Edit, CreditCard, FileText, UserX, Printer, Plus, Scale,
   RotateCcw, IdCard, User, MoreVertical, AlertTriangle, Receipt, Paperclip,
+  GraduationCap, CalendarOff, Undo2, Ban,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,18 +23,28 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { StruckOffModal } from '@/components/shared/StruckOffModal';
-import { useAuthStore, useStudentStore, useLedgerStore, useSettingsStore, useAuditStore, can } from '@/stores';
+import { StudentStatusModal } from '@/components/shared/StudentStatusModal';
+import { ChangeFeePlanModal } from '@/components/students/ChangeFeePlanModal';
+import { CancelAdmissionModal } from '@/components/students/CancelAdmissionModal';
+import { StatementDialog } from '@/components/receipts/StatementDialog';
+import { useAuthStore, useStudentStore, useLedgerStore, useSettingsStore, useAuditStore, useFeeTemplateStore, can } from '@/stores';
 import { canWrite } from '@/stores/authStore';
 import { formatDate, formatCNIC, formatPKR, formatBalanceDisplay, getTermLabel } from '@/lib/utils';
 import { getSubCourseDef, SEMESTER_OPTIONS } from '@/lib/constants';
 import { getNextTerm } from '@/lib/promotion';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
 import {
+  ageingOf,
+  chargeStateOf,
   chronological,
   entryResolver,
   signedEffect,
 } from '@/lib/ledger';
 import type { EntryLookup } from '@/lib/ledger';
+import type { AgeingBucket } from '@/lib/fee/ageing';
+import { concessionValueLabel, scopeLabel } from '@/lib/fee/planPreview';
+import type { ConcessionRecord } from '@/lib/fee/types';
+import { dayKey } from '@/lib/dates';
 import { StudentStatusBadge } from '@/components/students/StudentStatusBadge';
 import { SnoDisplay } from '@/components/students/SnoDisplay';
 import { StudentIdCard } from '@/components/students/StudentIdCard';
@@ -57,6 +68,12 @@ interface TermRow {
   paid: number;
   due: number;
   billed: boolean;
+  /** Due date of this term's open charge; null when nothing is billed (§24). */
+  dueDate: string | null;
+  /** Past-due part of this term's unpaid charges (§24). */
+  overdue: number;
+  /** Age of the oldest past-due charge in this term, in whole days. */
+  daysOverdue: number;
 }
 
 /**
@@ -86,6 +103,8 @@ function columnOf(entry: LedgerEntry, resolve: EntryLookup): 'charged' | 'conces
 
 function termStatus(r: TermRow): { label: string; cls: string } {
   if (!r.billed) return { label: 'Not yet billed', cls: 'text-ink-subtle' };
+  // §24: a term past its due date with money unpaid reads Overdue, in red, with days.
+  if (r.overdue > 0) return { label: `Overdue · ${r.daysOverdue} ${r.daysOverdue === 1 ? 'day' : 'days'}`, cls: 'text-dues font-medium' };
   if (r.due < 0) return { label: 'Credit', cls: 'text-credit' };
   if (r.due === 0) return { label: 'Paid', cls: 'text-cleared' };
   if (r.paid > 0) return { label: 'Partly paid', cls: 'text-dues' };
@@ -99,7 +118,17 @@ export default function StudentProfile() {
   const role = user?.role;
   const canEdit = canWrite(role);
   const canTakePayment = can(role, 'payment.record');
+  // §26.1: only the Accountant and Admin change a plan after admission — a Counter
+  // operator would send a request, so the button is not theirs.
+  const canAdjustPlan = can(role, 'ledger.adjust');
+  // §28: mark completed / put on leave — Admin and Accountant only.
+  const canStatus = can(role, 'student.status');
   const [modalMode, setModalMode] = useState<'strike' | 'reverse' | null>(null);
+  const [statusModal, setStatusModal] = useState<'complete' | 'leave' | 'return' | null>(null);
+  const [showChangePlan, setShowChangePlan] = useState(false);
+  const [showCancelAdmission, setShowCancelAdmission] = useState(false);
+  // §55: Print statement asks for the period and layout, then previews.
+  const [showStatement, setShowStatement] = useState(false);
 
   const students = useStudentStore((s) => s.students);
   const entries = useLedgerStore((s) => s.entries);
@@ -115,15 +144,21 @@ export default function StudentProfile() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (modalMode) setModalMode(null);
+      if (modalMode || statusModal) { setModalMode(null); setStatusModal(null); }
       else navigate(-1);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [modalMode, navigate]);
+  }, [modalMode, statusModal, navigate]);
 
   const snoNum = Number(sno);
   const ledger = useMemo(() => entries.filter((t) => t.studentSno === snoNum), [entries, snoNum]);
+
+  // §24: the term table's Due dates, Overdue statuses and the ageing bar all come
+  // from the same charge state the ledger prints — never a second calculation.
+  const today = dayKey();
+  const chargeState = useMemo(() => chargeStateOf(ledger), [ledger]);
+  const ageing = useMemo(() => ageingOf(chargeState, today), [chargeState, today]);
 
   // Per-term figures derived from the entries, grouped by entry.term (§5). All hooks
   // run before the conditional return below (rules of hooks).
@@ -147,10 +182,31 @@ export default function StudentProfile() {
     const nextTerm = next ? termNum(next) : 0;
     if (nextTerm) keys.add(nextTerm);
 
+    // §24: each term's due date (of its open charge where one exists) and its
+    // overdue share, grouped from the same charge state and ageing rows.
+    const extras = new Map<number, { dueDate: string | null; unpaidDue: string | null; overdue: number; daysOverdue: number }>();
+    for (const charge of chargeState.charges) {
+      if (typeof charge.term !== 'number' || charge.term <= 0) continue;
+      const x = extras.get(charge.term) ?? { dueDate: null, unpaidDue: null, overdue: 0, daysOverdue: 0 };
+      if (!x.dueDate || charge.dueDate < x.dueDate) x.dueDate = charge.dueDate;
+      if (charge.unpaid > 0 && (!x.unpaidDue || charge.dueDate < x.unpaidDue)) x.unpaidDue = charge.dueDate;
+      extras.set(charge.term, x);
+    }
+    const termById = new Map(chargeState.charges.map((c) => [c.entryId, c.term] as const));
+    for (const row of ageing.rows) {
+      if (row.bucket === 'notYetDue') continue;
+      const term = termById.get(row.chargeId) ?? (row.term > 0 ? row.term : null);
+      const x = term !== null ? extras.get(term) : undefined;
+      if (!x) continue;
+      x.overdue += row.unpaid;
+      if (row.daysOverdue > x.daysOverdue) x.daysOverdue = row.daysOverdue;
+    }
+
     return [...keys]
       .sort((a, b) => a - b)
       .map((term) => {
         const bucket = totals.get(term) ?? { charged: 0, concessions: 0, paid: 0 };
+        const extra = extras.get(term);
         return {
           term,
           semester: semesterOf(term) ?? student.semester,
@@ -159,9 +215,15 @@ export default function StudentProfile() {
           paid: Math.max(0, bucket.paid),
           due: bucket.charged - bucket.concessions - bucket.paid,
           billed: bucket.charged > 0,
+          dueDate: extra?.unpaidDue ?? extra?.dueDate ?? null,
+          overdue: extra?.overdue ?? 0,
+          daysOverdue: extra?.daysOverdue ?? 0,
         };
       });
-  }, [ledger, student]);
+  }, [ledger, student, chargeState, ageing]);
+
+  // §18: the saved plan's template - only needed to name components in the record list.
+  const planTemplate = useFeeTemplateStore((s) => (student ? s.templates.find((t) => t.id === student.feeTemplateId) : undefined));
 
   if (!student) {
     return <div className="p-8 text-body text-ink-muted">Student not found (SNO: {sno})</div>;
@@ -184,8 +246,21 @@ export default function StudentProfile() {
         : 'not yet billed'
     : '—';
 
+  // §29: a record whose term differs from the ledger's highest charged term gets a
+  // warning showing both values, with a shortcut to the correction screen.
+  const highestBilledTerm = termRows.reduce((max, r) => (r.billed && r.term > max ? r.term : max), 0);
+  const highestBilledSemester = highestBilledTerm > 0 ? semesterOf(highestBilledTerm) : null;
+  const termRecordMismatch = highestBilledSemester !== null && highestBilledSemester !== student.semester ? highestBilledSemester : null;
+
   const hasChargeCurrentTerm = !!current?.billed;
   const hasFeePlan = !!student.baseFeeBreakup || typeof student.baseFeeRecurring === 'number';
+  // §18: the saved concession records, with their reasons - shown above the locked heads.
+  const planRecords = student.planConcessions ?? [];
+  const recordTargetName = (record: ConcessionRecord): string => {
+    const t = record.target;
+    if (t.kind === 'plan') return 'Whole plan';
+    return planTemplate?.components.find((c) => c.id === t.componentId)?.name ?? 'Component';
+  };
 
   // Last ledger entries, newest first, each with the signed effect §54 prints.
   const resolveLedger = entryResolver(ledger);
@@ -232,6 +307,21 @@ export default function StudentProfile() {
           </div>
         </div>
 
+        {termRecordMismatch && (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            <AlertTriangle size={16} />
+            <span>
+              Record says <strong>{getTermLabel(system, student.semester)}</strong>, but the highest term charged
+              in the ledger is <strong>{getTermLabel(system, termRecordMismatch)}</strong> — the record may need a correction.
+            </span>
+            {canEdit && (
+              <button className="underline hover:no-underline" onClick={() => navigate(`/students/${student.sno}/edit`)}>
+                Correct the term
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Action bar (§24 wireframe) */}
         <div className="flex flex-wrap items-center gap-2">
           {canTakePayment && (
@@ -242,7 +332,7 @@ export default function StudentProfile() {
           <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}`)}>
             <FileText size={14} className="mr-1.5" /> Ledger
           </Button>
-          {canEdit && hasNextTerm && (
+          {canEdit && hasNextTerm && !student.completed && !student.onLeave && (
             <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}/promote`)}>
               <Plus size={14} className="mr-1.5" /> Promote
             </Button>
@@ -267,7 +357,7 @@ export default function StudentProfile() {
               <DropdownMenuItem onClick={() => window.print()}>
                 <IdCard size={14} className="mr-2" /> Print ID Card
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate(`/ledger/${student.sno}`)}>
+              <DropdownMenuItem onClick={() => setShowStatement(true)}>
                 <Printer size={14} className="mr-2" /> Print Statement
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => navigate(`/payments/reprint?sno=${student.sno}`)}>
@@ -281,9 +371,39 @@ export default function StudentProfile() {
                       <RotateCcw size={14} className="mr-2" /> Reverse Struck Off
                     </DropdownMenuItem>
                   ) : (
-                    <DropdownMenuItem destructive onClick={() => setModalMode('strike')}>
-                      <UserX size={14} className="mr-2" /> Mark as Struck Off
+                    <>
+                      <DropdownMenuItem destructive onClick={() => setModalMode('strike')}>
+                        <UserX size={14} className="mr-2" /> Mark as Struck Off
+                      </DropdownMenuItem>
+                      {/* §27.3: within the cancellation window — Accountant and Admin. */}
+                      {can(role, 'student.strike') && (
+                        <DropdownMenuItem destructive onClick={() => setShowCancelAdmission(true)}>
+                          <Ban size={14} className="mr-2" /> Cancel admission
+                        </DropdownMenuItem>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+              {/* §26.5 / §28: completed and on-leave transitions — Admin and Accountant. */}
+              {canStatus && !student.struckOff && !student.completed && (
+                <>
+                  <DropdownMenuSeparator />
+                  {student.onLeave ? (
+                    <DropdownMenuItem onClick={() => setStatusModal('return')}>
+                      <Undo2 size={14} className="mr-2" /> Return from leave
                     </DropdownMenuItem>
+                  ) : (
+                    <>
+                      <DropdownMenuItem onClick={() => setStatusModal('leave')}>
+                        <CalendarOff size={14} className="mr-2" /> Put on leave
+                      </DropdownMenuItem>
+                      {!hasNextTerm && hasChargeCurrentTerm && (
+                        <DropdownMenuItem onClick={() => setStatusModal('complete')}>
+                          <GraduationCap size={14} className="mr-2" /> Mark as completed
+                        </DropdownMenuItem>
+                      )}
+                    </>
                   )}
                 </>
               )}
@@ -292,7 +412,7 @@ export default function StudentProfile() {
         </div>
 
         {/* Alerts strip (§24) */}
-        {(student.struckOff || !hasFeePlan || !hasChargeCurrentTerm) && (
+        {(student.struckOff || !hasFeePlan || !hasChargeCurrentTerm || ageing.overdueTotal > 0) && (
           <div className="space-y-2">
             {student.struckOff && (
               <AlertStrip tone="danger" icon={<UserX size={16} />}>
@@ -304,6 +424,12 @@ export default function StudentProfile() {
             {!hasFeePlan && (
               <AlertStrip tone="warn" icon={<AlertTriangle size={16} />}>
                 No fee plan attached. Add one before promotion.
+              </AlertStrip>
+            )}
+            {ageing.overdueTotal > 0 && (
+              <AlertStrip tone="warn" icon={<AlertTriangle size={16} />}>
+                <span className="font-semibold">Overdue {formatPKR(ageing.overdueTotal)}</span>
+                {' '}— the oldest unpaid charge is {ageing.oldestDays} {ageing.oldestDays === 1 ? 'day' : 'days'} past its due date.
               </AlertStrip>
             )}
             {hasFeePlan && !hasChargeCurrentTerm && (
@@ -337,6 +463,9 @@ export default function StudentProfile() {
               nextFeeLabel={nextFeeLabel}
               nextTermLabel={nextSemester ? getTermLabel(system, nextSemester) : 'Program complete'}
               system={system}
+              overdue={ageing.overdueTotal}
+              overdueDays={ageing.oldestDays}
+              buckets={ageing.buckets}
               termRows={termRows}
               compact
             />
@@ -365,13 +494,39 @@ export default function StudentProfile() {
               nextFeeLabel={nextFeeLabel}
               nextTermLabel={nextSemester ? getTermLabel(system, nextSemester) : 'Program complete'}
               system={system}
+              overdue={ageing.overdueTotal}
+              overdueDays={ageing.oldestDays}
+              buckets={ageing.buckets}
               termRows={termRows}
             />
             <Card>
               <CardHeader>
-                <CardTitle>Fee Plan</CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle>Fee Plan</CardTitle>
+                  {canAdjustPlan && student.feeTemplateId && (
+                    <Button size="sm" variant="outline" onClick={() => setShowChangePlan(true)}>
+                      <Scale size={14} className="mr-1.5" /> Change fee plan
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-4">
+                {planRecords.length > 0 && (
+                  <div>
+                    <div className="text-meta text-ink-muted mb-1">
+                      Concessions{planTemplate ? ` · from “${planTemplate.name}”${student.feeTemplateVersion ? ` v${student.feeTemplateVersion}` : ''}` : ''}
+                    </div>
+                    <ul className="divide-y divide-hairline rounded-card border border-hairline">
+                      {planRecords.map((record) => (
+                        <li key={record.id} className="px-3 py-2 text-body">
+                          <span className="font-medium text-ink">{recordTargetName(record)}</span>
+                          <span className="text-ink-muted"> · {concessionValueLabel(record, formatPKR)} · {scopeLabel(record.scope)}</span>
+                          <div className="text-meta text-ink-subtle">{record.reasonCategory}{record.note ? ` — ${record.note}` : ''}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {student.baseFeeBreakup ? (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-body">
                     {Object.entries(student.baseFeeBreakup).map(([k, v]) => (
@@ -381,11 +536,11 @@ export default function StudentProfile() {
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : planRecords.length === 0 ? (
                   <div className="text-body text-ink-muted">
                     No locked fee plan on this student{hasChargeCurrentTerm ? '' : ' — add one before promotion'}.
                   </div>
-                )}
+                ) : null}
               </CardContent>
             </Card>
           </TabsContent>
@@ -404,7 +559,7 @@ export default function StudentProfile() {
                   <Button size="sm" onClick={() => navigate(`/ledger/${student.sno}`)}>
                     <FileText size={14} className="mr-1.5" /> Open full ledger
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => navigate(`/ledger/${student.sno}`)}>
+                  <Button variant="outline" size="sm" onClick={() => setShowStatement(true)}>
                     <Printer size={14} className="mr-1.5" /> Print statement
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => navigate(`/payments/reprint?sno=${student.sno}`)}>
@@ -449,6 +604,11 @@ export default function StudentProfile() {
                   <Field label="Gender" value={student.gender || 'Not entered'} />
                   <Field label="Domicile" value={student.domicile || 'Not entered'} />
                   <Field label="Emergency Contact" value={student.emergencyContact || 'Not entered'} />
+                  <Field label="Guardian" value={student.guardianName || 'Not entered'} />
+                  <Field label="Guardian Phone" value={student.guardianPhone || 'Not entered'} />
+                  <Field label="Roll No" value={student.rollNo || 'Not entered'} />
+                  <Field label="Council Reg No" value={student.councilRegistrationNo || 'Not entered'} />
+                  <Field label="Previous Education" value={student.previousEducation || 'Not entered'} />
                   <div className="col-span-2">
                     <Field label="Address" value={student.address || 'Not entered'} wrap />
                   </div>
@@ -493,6 +653,16 @@ export default function StudentProfile() {
       {modalMode && (
         <StruckOffModal student={student} mode={modalMode} onClose={() => setModalMode(null)} />
       )}
+      {statusModal && (
+        <StudentStatusModal student={student} mode={statusModal} onClose={() => setStatusModal(null)} />
+      )}
+      {showChangePlan && (
+        <ChangeFeePlanModal student={student} onClose={() => setShowChangePlan(false)} />
+      )}
+      {showCancelAdmission && (
+        <CancelAdmissionModal student={student} onClose={() => setShowCancelAdmission(false)} />
+      )}
+      {showStatement && <StatementDialog student={student} onClose={() => setShowStatement(false)} />}
     </div>
   );
 }
@@ -559,6 +729,9 @@ function FeeSummaryCard(props: {
   nextFeeLabel: string;
   nextTermLabel: string;
   system: 'semester' | 'annual' | 'months';
+  overdue: number;
+  overdueDays: number;
+  buckets: Record<AgeingBucket, number>;
   termRows: TermRow[];
   compact?: boolean;
 }) {
@@ -568,14 +741,16 @@ function FeeSummaryCard(props: {
         <CardTitle>Fee Summary</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           <SummaryStat label={`Total agreed (${props.agreedTerm})`} value={formatPKR(props.agreed)} />
           <SummaryStat label="Concessions" value={props.concessions ? `−${formatPKR(props.concessions)}` : formatPKR(0)} cls="text-credit" />
           <SummaryStat label="Paid" value={formatPKR(props.paid)} />
           <SummaryStat label="Due now" value={formatPKR(Math.max(0, props.due))} cls={props.due > 0 ? 'text-dues' : undefined} />
+          <SummaryStat label="Overdue" value={formatPKR(props.overdue)} cls={props.overdue > 0 ? 'text-dues' : undefined} />
           <SummaryStat label={`Next fee (${props.nextTermLabel})`} value={props.nextFeeLabel} />
         </div>
         <TermByTermTable system={props.system} termNoun={props.termNoun} rows={props.compact ? props.termRows.slice(-4) : props.termRows} />
+        {props.overdue > 0 && <AgeingBar buckets={props.buckets} oldestDays={props.overdueDays} />}
       </CardContent>
     </Card>
   );
@@ -604,6 +779,7 @@ function TermByTermTable({ rows, system, termNoun }: { rows: TermRow[]; system: 
             <TableHead className="text-right">Concessions</TableHead>
             <TableHead className="text-right">Paid</TableHead>
             <TableHead className="text-right">Due</TableHead>
+            <TableHead>Due date</TableHead>
             <TableHead>Status</TableHead>
           </TableRow>
         </TableHeader>
@@ -617,12 +793,55 @@ function TermByTermTable({ rows, system, termNoun }: { rows: TermRow[]; system: 
                 <TableCell className="text-right tabular-nums text-credit">{r.concessions ? `−${formatPKR(r.concessions)}` : '—'}</TableCell>
                 <TableCell className="text-right tabular-nums text-ink-secondary">{r.paid ? formatPKR(r.paid) : '—'}</TableCell>
                 <TableCell className="text-right tabular-nums text-ink-secondary">{r.billed ? formatPKR(Math.abs(r.due)) : '—'}</TableCell>
-                <TableCell className={`text-body ${status.cls}`}>{r.billed ? status.label : 'not yet billed'}</TableCell>
+                <TableCell className="text-ink-secondary">{r.dueDate ? formatDate(r.dueDate) : '—'}</TableCell>
+                <TableCell className={`text-body ${status.cls}`}>{status.label}</TableCell>
               </TableRow>
             );
           })}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+/** §24 ageing bar: not-yet-due plus each overdue bucket, one hue that deepens. */
+const AGE_SEGMENTS: { key: AgeingBucket; label: string; bar: string }[] = [
+  { key: 'notYetDue', label: 'Not yet due', bar: 'bg-hairline-strong' },
+  { key: 'd1to30', label: '1–30 days', bar: 'bg-dues/30' },
+  { key: 'd31to60', label: '31–60 days', bar: 'bg-dues/55' },
+  { key: 'd61to90', label: '61–90 days', bar: 'bg-dues/80' },
+  { key: 'over90', label: 'Over 90 days', bar: 'bg-dues' },
+];
+
+function AgeingBar({ buckets, oldestDays }: { buckets: Record<AgeingBucket, number>; oldestDays: number }) {
+  const total = AGE_SEGMENTS.reduce((sum, seg) => sum + buckets[seg.key], 0);
+  if (total <= 0) return null;
+  return (
+    <div>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-micro">
+        <span className="text-ink-muted">Ageing</span>
+        <span className="text-ink-muted">
+          Oldest unpaid charge: {oldestDays} {oldestDays === 1 ? 'day' : 'days'}
+        </span>
+      </div>
+      <div className="flex h-2.5 w-full overflow-hidden rounded-pill border border-hairline-soft">
+        {AGE_SEGMENTS.filter((seg) => buckets[seg.key] > 0).map((seg) => (
+          <div
+            key={seg.key}
+            className={seg.bar}
+            style={{ width: `${(buckets[seg.key] / total) * 100}%` }}
+            title={`${seg.label}: ${formatPKR(buckets[seg.key])}`}
+          />
+        ))}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+        {AGE_SEGMENTS.map((seg) => (
+          <span key={seg.key} className="flex items-center gap-1.5 text-micro text-ink-muted">
+            <span className={`h-2 w-2 flex-none rounded-pill ${seg.bar}`} />
+            {seg.label} · <span className="tabular-nums text-ink-secondary">{formatPKR(buckets[seg.key])}</span>
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

@@ -3,7 +3,7 @@
 // ============================================
 
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
@@ -11,13 +11,17 @@ import StudentList from '@/pages/students/StudentList';
 import StudentProfile from '@/pages/students/StudentProfile';
 import NewAdmission from '@/pages/students/NewAdmission';
 import RecordPayment from '@/pages/payments/RecordPayment';
-import ReprintReceipt from '@/pages/payments/ReprintReceipt';
+import Receipts from '@/pages/receipts/Receipts';
+import ReceiptRegister from '@/pages/receipts/ReceiptRegister';
+import ReceiptBooks from '@/pages/settings/ReceiptBooks';
 import Reports from '@/pages/Reports';
 import Settings from '@/pages/Settings';
 import Users from '@/pages/settings/Users';
 import EditStudent from '@/pages/students/EditStudent';
 import StudentLedger from '@/pages/ledger/StudentLedger';
 import LedgerHub from '@/pages/ledger/LedgerHub';
+import LedgerCheck from '@/pages/ledger/LedgerCheck';
+import DayBook from '@/pages/ledger/DayBook';
 import AddFeeDemand from '@/pages/ledger/AddFeeDemand';
 import BulkFeeDemand from '@/pages/ledger/BulkFeeDemand';
 import AddCharge from '@/pages/ledger/AddCharge';
@@ -34,6 +38,7 @@ import ProgramsTab from '@/pages/academic/ProgramsTab';
 import SessionsTab from '@/pages/academic/SessionsTab';
 import PromoteStudent from '@/pages/ledger/PromoteStudent';
 import Accounts from '@/pages/finance/Accounts';
+import Overview from '@/pages/finance/Overview';
 import AccountPage from '@/pages/finance/AccountPage';
 import MoneyTransfer from '@/pages/finance/MoneyTransfer';
 import PettyCash from '@/pages/finance/PettyCash';
@@ -50,6 +55,12 @@ import VendorPage from '@/pages/finance/VendorPage';
 import PayOut from '@/pages/finance/PayOut';
 import Vouchers from '@/pages/finance/Vouchers';
 import VoucherPage from '@/pages/finance/VoucherPage';
+import StatementImport from '@/pages/finance/StatementImport';
+import Reconcile from '@/pages/finance/Reconcile';
+import Budgets from '@/pages/finance/Budgets';
+import MonthClose from '@/pages/finance/MonthClose';
+import FinanceReports from '@/pages/finance/Reports';
+import FinanceReportPage from '@/pages/finance/ReportPage';
 import StaffDirectory from '@/pages/staff/StaffDirectory';
 import StaffProfile from '@/pages/staff/StaffProfile';
 import WorkInputs from '@/pages/staff/WorkInputs';
@@ -79,6 +90,22 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return isLoggedIn ? <>{children}</> : <Navigate to="/login" replace />;
 }
 
+/** §16: the dashboard's "Expenses this month" tile carries ?month=this — keep it. */
+function ExpensesRedirect() {
+  const location = useLocation();
+  return <Navigate to={{ pathname: '/finance/bills', search: location.search }} replace />;
+}
+
+/**
+ * PAYMENTS_RECEIPTS_LEDGER_DESIGN §50/§63: reprinting a receipt is a row action on
+ * the receipts list, not a screen of its own. The old address keeps working and
+ * keeps its `?sno=` so a link from a student profile still lands on that student.
+ */
+function ReceiptsRedirect() {
+  const location = useLocation();
+  return <Navigate to={{ pathname: '/receipts', search: location.search }} replace />;
+}
+
 export default function App() {
   const isFileProtocol = typeof window !== 'undefined' && window.location.protocol === 'file:';
   const Router = isFileProtocol ? HashRouter : BrowserRouter;
@@ -105,14 +132,28 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="students" element={<StudentList />} />
           <Route path="ledger" element={<LedgerHub />} />
+          {/* §63: the ledger check is Admin-only and sits before :sno or it would be
+              read as a student number (§7.3). */}
+          <Route path="ledger/check" element={<RequirePermission perm="ledger.check"><LedgerCheck /></RequirePermission>} />
           <Route path="ledger/bulk-demand" element={<RequirePermission perm="ledger.adjust"><BulkFeeDemand /></RequirePermission>} />
           <Route path="ledger/:sno" element={<StudentLedger />} />
           <Route path="admissions/new" element={<RequirePermission perm="student.admit"><NewAdmission /></RequirePermission>} />
           <Route path="payments/record" element={<RequirePermission perm="payment.record"><RecordPayment /></RequirePermission>} />
-          <Route path="payments/reprint" element={<RequirePermission perm="payment.reprint"><ReprintReceipt /></RequirePermission>} />
+          {/* §50/§63: the receipts list and one book's register. Every role reads
+              them; a counter's rows are scoped to its own book inside the screen. */}
+          <Route path="payments/reprint" element={<RequirePermission perm="payment.reprint"><ReceiptsRedirect /></RequirePermission>} />
+          <Route path="receipts" element={<RequirePermission perm="receipts.view"><Receipts /></RequirePermission>} />
+          <Route path="receipts/books/:id" element={<RequirePermission perm="receipts.view"><ReceiptRegister /></RequirePermission>} />
+          {/* §58/§63: the cheque register — the same screen the money area reaches,
+              addressed by the payments doc's own route. */}
+          <Route path="cheques" element={<RequirePermission perm="cheques.view"><ChequesInHand /></RequirePermission>} />
+          <Route path="day-book" element={<RequirePermission perm="daybook.view"><DayBook /></RequirePermission>} />
           <Route path="reports" element={<Reports />} />
           <Route path="settings" element={<RequirePermission perm="settings.manage"><Settings /></RequirePermission>} />
           <Route path="settings/users" element={<RequirePermission perm="user.manage"><Users /></RequirePermission>} />
+          {/* §57: receipt books are Admin-only — a typed URL from another role fails
+              exactly like the hidden link would (§3). */}
+          <Route path="settings/receipt-books" element={<RequirePermission perm="receipts.manage"><ReceiptBooks /></RequirePermission>} />
           <Route path="students/:sno" element={<StudentProfile />} />
           <Route path="students/:sno/edit" element={<RequirePermission perm="student.edit"><EditStudent /></RequirePermission>} />
           <Route path="ledger/:sno/add-demand" element={<RequirePermission perm="ledger.adjust"><AddFeeDemand /></RequirePermission>} />
@@ -129,9 +170,21 @@ export default function App() {
           </Route>
           <Route path="fee-templates" element={<RequirePermission perm="feeTemplate.manage"><FeeTemplates /></RequirePermission>} />
           {/* Finance core §58: the money screens. /bank's old address now lands
-              on Accounts; its screens stay reachable below until F3 replaces them. */}
+              on Accounts; its screens stay reachable below until F3 replaces them.
+              The overview is /finance's own index (§59) and the reports hub is
+              §70.1 — both read the same derived figures as the screens (§56). */}
+          <Route path="finance" element={<RequirePermission perm="finance.view"><Overview /></RequirePermission>} />
           <Route path="finance/accounts" element={<RequirePermission perm="finance.view"><Accounts /></RequirePermission>} />
           <Route path="finance/accounts/:id" element={<RequirePermission perm="finance.view"><AccountPage /></RequirePermission>} />
+          {/* §40/§42: a statement is imported for one account and matched a
+              month at a time; the bare /finance/reconcile picks an account. */}
+          <Route path="finance/bank/:accountId/import" element={<RequirePermission perm="finance.reconcile"><StatementImport /></RequirePermission>} />
+          <Route path="finance/reconcile" element={<RequirePermission perm="finance.reconcile"><Reconcile /></RequirePermission>} />
+          <Route path="finance/reconcile/:accountId/:month" element={<RequirePermission perm="finance.reconcile"><Reconcile /></RequirePermission>} />
+          <Route path="finance/budgets" element={<RequirePermission perm="finance.view"><Budgets /></RequirePermission>} />
+          <Route path="finance/month-close" element={<RequirePermission perm="finance.view"><MonthClose /></RequirePermission>} />
+          <Route path="finance/reports" element={<RequirePermission perm="finance.view"><FinanceReports /></RequirePermission>} />
+          <Route path="finance/reports/:name" element={<RequirePermission perm="finance.view"><FinanceReportPage /></RequirePermission>} />
           <Route path="finance/transfer" element={<RequirePermission perm="finance.transfer"><MoneyTransfer /></RequirePermission>} />
           {/* Finance §10/§58/§66: the petty float — its voucher, top-up and count. */}
           <Route path="finance/petty-cash" element={<RequirePermission perm="finance.petty"><PettyCash /></RequirePermission>} />
@@ -196,7 +249,7 @@ export default function App() {
           {/* Finance §58: the legacy expenses list is gone — the bill register
               answers the same need. The bank-withdrawal tagger stays until
               reconciliation replaces it (F6). */}
-          <Route path="expenses" element={<Navigate to="/finance/bills" replace />} />
+          <Route path="expenses" element={<ExpensesRedirect />} />
           <Route path="expenses/add" element={<Navigate to="/finance/bills/new" replace />} />
           <Route path="expenses/tag-from-bank" element={<RequirePermission perm="expense.add"><TagBankWithdrawals /></RequirePermission>} />
           <Route path="bank" element={<Navigate to="/finance/accounts" replace />} />

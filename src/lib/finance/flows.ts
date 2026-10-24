@@ -97,6 +97,8 @@ export function paymentMoneyEntry(input: PaymentFlowInput, series: EntrySeries):
     amount,
     kind: 'StudentPayment',
     payee,
+    // §17: the route is kept, so the money-flow report can split fees by mode.
+    mode: input.mode,
     reference: moneyRef || receiptNo,
     linkedDoc: receiptNo,
   });
@@ -170,10 +172,30 @@ export function chequeClearedEntry(
   });
 }
 
-/** What one held cheque became. §8 gives it two ways out: the bank takes the
- *  money when it clears, or a reversal stands against the hold when it bounces
- *  or its receipt is voided. Nothing else — a held cheque is no balance (§5). */
-export type IncomingChequeStatus = 'In hand' | 'Cleared' | 'Bounced';
+/**
+ * §34: the five states a cheque passes through. Received and Deposited are both
+ * still "in hand" — neither is money in any account — until it Clears; a Bounced
+ * or Returned cheque has had its payment reversed (§35).
+ */
+export type IncomingChequeStatus =
+  | 'Received'
+  | 'Deposited'
+  | 'Cleared'
+  | 'Bounced'
+  | 'Returned';
+
+/** §34/§58: a Received cheque sent to the bank for clearing. No money moves until
+ *  it clears (§35); the record only remembers the bank and the deposit date. */
+export interface ChequeDeposit {
+  /** The held money-in entry this deposit belongs to. */
+  heldId: string;
+  /** The bank account the cheque was paid into (§34). */
+  bankAccountId: string;
+  /** The day it was handed to the bank, local `YYYY-MM-DD`. */
+  date: string;
+  /** The deposit slip or batch reference, where the counter notes one. */
+  reference?: string;
+}
 
 export interface IncomingChequeRow {
   /** The money-in entry on the cheques-in-hand account (§8). */
@@ -182,6 +204,8 @@ export interface IncomingChequeRow {
   cleared?: MoneyEntry;
   /** The reversal standing against the hold (§8, §34). */
   reversed?: MoneyEntry;
+  /** The deposit that sent this cheque to the bank, if it has been deposited (§34). */
+  deposit?: ChequeDeposit;
   status: IncomingChequeStatus;
 }
 
@@ -189,12 +213,15 @@ export interface IncomingChequeRow {
  * §18 "Incoming cheques in hand", built from the books and never stored: every
  * student payment that landed in a cheques-in-hand account, with what became of
  * it. A clearing entry is found by the document it names (`linkedDoc`, the
- * receipt number `chequeClearedEntry` carries over); a bounce or a void is found
- * by the entry it reverses — and a reversal outranks it, so totals net out (§17).
+ * receipt number `chequeClearedEntry` carries over); a bounce or a return is
+ * found by the entry it reverses — and a reversal outranks it, so totals net out
+ * (§17). The deposit record, where there is one, turns Received into Deposited
+ * (§34); nothing about it is money until the cheque clears.
  */
 export function incomingChequeRows(
   accounts: readonly MoneyAccount[],
   entries: readonly MoneyEntry[],
+  deposits: readonly ChequeDeposit[] = [],
 ): IncomingChequeRow[] {
   const holdIds = new Set(
     accounts.filter((a) => a.type === 'chequesInHand').map((a) => a.id),
@@ -209,21 +236,52 @@ export function incomingChequeRows(
       clearedFor.set(e.linkedDoc, e);
     }
   }
+  const depositFor = new Map<string, ChequeDeposit>();
+  for (const d of deposits) {
+    if (!depositFor.has(d.heldId)) depositFor.set(d.heldId, d);
+  }
 
   const rows: IncomingChequeRow[] = [];
   for (const held of entries) {
     if (held.kind !== 'StudentPayment' || held.direction !== 'In' || !holdIds.has(held.accountId)) continue;
     const reversed = reversalFor.get(held.id);
     const cleared = reversed ? undefined : (held.linkedDoc ? clearedFor.get(held.linkedDoc) : undefined);
-    rows.push({ held, cleared, reversed, status: reversed ? 'Bounced' : cleared ? 'Cleared' : 'In hand' });
+    const deposit = depositFor.get(held.id);
+    // A reversal outranks a clearing; its `outcome` tells a bounce from a return (§34).
+    const status: IncomingChequeStatus = reversed
+      ? reversed.outcome === 'Returned' ? 'Returned' : 'Bounced'
+      : cleared ? 'Cleared'
+      : deposit ? 'Deposited'
+      : 'Received';
+    rows.push({ held, cleared, reversed, deposit, status });
   }
   return rows.sort((a, b) => (a.held.date < b.held.date ? -1 : a.held.date > b.held.date ? 1 : a.held.no - b.held.no));
 }
 
 /** §18: the figure the overview and the held-money report show — §79.24's "not
- *  counted as money in" until each cheque reaches a bank account. */
+ *  counted as money in" until each cheque reaches a bank account. Both Received
+ *  and Deposited cheques are still in hand (§34). */
 export function chequesInHandTotal(rows: readonly IncomingChequeRow[]): number {
-  return rows.filter((r) => r.status === 'In hand').reduce((sum, r) => sum + r.held.amount, 0);
+  return rows
+    .filter((r) => r.status === 'Received' || r.status === 'Deposited')
+    .reduce((sum, r) => sum + r.held.amount, 0);
+}
+
+/** §58: the register's "Cleared this month" figure — cheques the bank honoured in
+ *  `month` (`YYYY-MM`), by their clearing date. */
+export function clearedChequesThisMonth(
+  rows: readonly IncomingChequeRow[],
+  month: string,
+): { count: number; amount: number } {
+  let count = 0;
+  let amount = 0;
+  for (const r of rows) {
+    if (r.status !== 'Cleared' || !r.cleared) continue;
+    if (r.cleared.date.slice(0, 7) !== month) continue;
+    count += 1;
+    amount += r.held.amount;
+  }
+  return { count, amount };
 }
 
 export interface DayCloseFlowInput extends SeriesBase {

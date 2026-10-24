@@ -21,6 +21,9 @@ import type { LedgerEntry, LedgerEntryLine } from './types.ts';
 /** §5.1 — the fallback when a student has no template to read a due-date rule from. */
 export const DEFAULT_TERM_DUE_DAYS = 15;
 
+/** §24.1 — the admission charge is due 14 days after admission unless the template says otherwise. */
+export const DEFAULT_ADMISSION_DUE_DAYS = 14;
+
 export interface FeeChargeDraft {
   studentSno: number;
   /** The student's next entry number, from the store (§5). */
@@ -38,6 +41,12 @@ export interface FeeChargeDraft {
   template: FeeTemplate | null;
   /** Posting date, local `YYYY-MM-DD` (§5) — the caller's local day. */
   date: string;
+  /**
+   * The due date this charge carries. An admission charge passes its own rule —
+   * 14 days after admission (§24.1) — because it is not a term charge; every
+   * other caller inherits the template's term rule (§5.1).
+   */
+  dueDate?: string;
   createdBy: string;
   description: string;
   /** Shared by every entry one action posts, so a bulk run reads as one act (§5, §18). */
@@ -56,6 +65,11 @@ export function termLinesOf(template: FeeTemplate, term: number): LedgerEntryLin
 /** When a term's charge is due: the posting day plus the template's own rule (§5.1). */
 export function termDueDateOf(template: FeeTemplate | null, date: string): string {
   return addDays(date, template?.termDueDays ?? DEFAULT_TERM_DUE_DAYS);
+}
+
+/** §24.1 — an admission charge is due the template's admission rule, 14 days by default. */
+export function admissionDueDateOf(template: FeeTemplate | null, date: string): string {
+  return addDays(date, template?.admissionDueDays ?? DEFAULT_ADMISSION_DUE_DAYS);
 }
 
 /**
@@ -81,7 +95,7 @@ export function feeChargeEntry(draft: FeeChargeDraft): LedgerEntry {
     amount: draft.amount,
     description: draft.description,
     term: draft.term,
-    dueDate: termDueDateOf(draft.template, draft.date),
+    dueDate: draft.dueDate ?? termDueDateOf(draft.template, draft.date),
     lines: itemised,
     createdBy: draft.createdBy,
     createdAt: `${draft.date}T00:00:00.000Z`,

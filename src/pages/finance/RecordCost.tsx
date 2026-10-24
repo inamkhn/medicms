@@ -5,11 +5,12 @@
 // voucher posted by Pay out (§29) — so saving a "pay now" cost records the bill
 // and carries the user straight to Pay out with it already chosen. The §26 and
 // §32 rules run through `recordCost` before anything is saved, so the form and
-// the books never disagree.
+// the books never disagree. `?recurring=` arrives from a §28 reminder and fills
+// the form in; `program` tags the cost so §54.12 can set it beside its fees.
 // ============================================
 
 import { useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,6 +21,7 @@ import { formatPKR } from '@/lib/utils';
 import { dayKey } from '@/lib/dates';
 import { nowISO } from '@/lib/txn';
 import { can } from '@/lib/permissions';
+import { PROGRAM_OPTIONS } from '@/lib/constants';
 import { useAuditStore, useAuthStore, useBillsStore, useMoneyStore, useSettingsStore } from '@/stores';
 import {
   COST_GROUP_LABELS,
@@ -27,6 +29,7 @@ import {
   attachmentKind,
   categoryGroups,
   categoriesInGroup,
+  draftFromTemplate,
   manualCostBlockReason,
   duplicateBillWarning,
   recordCost,
@@ -37,23 +40,35 @@ import {
 
 export default function RecordCost() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const categories = useBillsStore((s) => s.categories);
   const vendors = useBillsStore((s) => s.vendors);
   const bills = useBillsStore((s) => s.bills);
+  const recurring = useBillsStore((s) => s.recurring);
   const closedMonths = useMoneyStore((s) => s.closedMonths);
   const limits = useSettingsStore((s) => s.financeLimits);
   const role = useAuthStore((s) => s.user?.role);
   const userName = useAuthStore((s) => s.user?.name ?? 'Admin');
 
+  // §28: a reminder opens the form already filled in; the amount is still the
+  // user's to check, and the bill is still theirs to save.
+  const templateId = params.get('recurring') ?? '';
+  const template = recurring.find((t) => t.id === templateId);
+  const reminderMonth = params.get('date')?.slice(0, 7) ?? '';
+  const prefill = template ? draftFromTemplate(template, params.get('date') || dayKey(), userName) : undefined;
+
   const [payNow, setPayNow] = useState(false);
-  const [payeeMode, setPayeeMode] = useState<'vendor' | 'text'>('vendor');
-  const [vendorId, setVendorId] = useState(vendors[0]?.id ?? '');
-  const [payeeText, setPayeeText] = useState('');
-  const [group, setGroup] = useState<CostGroupId | ''>('');
-  const [categoryId, setCategoryId] = useState('');
-  const [description, setDescription] = useState('');
-  const [amount, setAmount] = useState('');
-  const [date, setDate] = useState(dayKey());
+  const [payeeMode, setPayeeMode] = useState<'vendor' | 'text'>(prefill?.payeeText ? 'text' : 'vendor');
+  const [vendorId, setVendorId] = useState(prefill?.vendorId ?? vendors[0]?.id ?? '');
+  const [payeeText, setPayeeText] = useState(prefill?.payeeText ?? '');
+  const [group, setGroup] = useState<CostGroupId | ''>(
+    prefill?.categoryId ? categories.find((c) => c.id === prefill.categoryId)?.group ?? '' : '',
+  );
+  const [categoryId, setCategoryId] = useState(prefill?.categoryId ?? '');
+  const [description, setDescription] = useState(prefill?.description ?? '');
+  const [program, setProgram] = useState('');
+  const [amount, setAmount] = useState(prefill?.amount ? String(prefill.amount) : '');
+  const [date, setDate] = useState(prefill?.date ?? dayKey());
   const [billDate, setBillDate] = useState('');
   const [billNo, setBillNo] = useState('');
   const [dueDate, setDueDate] = useState('');
@@ -96,6 +111,7 @@ export default function RecordCost() {
       description,
       amount: amt,
       date,
+      program: program || undefined,
       billDate: billDate || undefined,
       billNo: billNo || undefined,
       dueDate: dueDate || undefined,
@@ -108,6 +124,8 @@ export default function RecordCost() {
     if (!result.ok) { setErrors(result.errors); return; }
     const errs = state.addBill(result.bill);
     if (errs.length) { setErrors(errs); return; }
+    // §28: the bill for the reminded month is recorded, so the reminder closes.
+    if (template) state.markRecurringUsed(template.id, reminderMonth || result.bill.date.slice(0, 7));
     useAuditStore.getState().addLog({ user: userName, action: 'Finance Entry', details: `Recorded cost ${result.bill.no} ${formatPKR(result.bill.amount)}` });
     if (payNow) {
       // The bill is only recorded here; Pay out posts its voucher (§29).
@@ -162,6 +180,14 @@ export default function RecordCost() {
         <Button variant={!payNow ? 'default' : 'outline'} size="sm" className="h-7 text-meta" onClick={() => setPayNow(false)}>Bill to pay later</Button>
       </div>
 
+      {/* §28: a reminder fills the form in but never saves it — the amount is
+          checked and the bill image attached by the person entering it. */}
+      {template && (
+        <div className="rounded-control border border-hairline-soft bg-slate-50 px-3 py-2 text-meta text-slate-600">
+          Filled in from the recurring bill “{template.description}”. Check the amount and attach the bill before saving (§28).
+        </div>
+      )}
+
       <Card><CardContent className="space-y-4 py-4">
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
@@ -211,6 +237,20 @@ export default function RecordCost() {
         <div className="space-y-1.5">
           <Label>Description *</Label>
           <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What the cost was for" />
+        </div>
+
+        {/* §54.12: an optional tag, so the program summary can set a program's
+            costs beside the fees it collected. */}
+        <div className="space-y-1.5">
+          <Label>Program (optional)</Label>
+          <Select value={program || 'none'} onValueChange={(v) => setProgram(v === 'none' ? '' : v)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No program</SelectItem>
+              {PROGRAM_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <p className="text-micro text-slate-400">Tags this cost to a program, so §54.12 can compare it with what that program brought in.</p>
         </div>
 
         <div className="grid grid-cols-2 gap-4">

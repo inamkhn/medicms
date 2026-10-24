@@ -353,6 +353,14 @@ describe('posting gates (§7.6, §7.7)', () => {
     equal(postingBlocker('SpecialCharge', finished), null);
     equal(postingBlocker('Payment', finished), null);
   });
+
+  it('blocks fee charges for an on-leave student but allows payments (§26.5)', () => {
+    const away = { struckOff: false, completed: false, onLeave: true };
+    ok(postingBlocker('FeeCharge', away));
+    equal(postingBlocker('SpecialCharge', away), null);
+    equal(postingBlocker('Payment', away), null);
+    equal(postingBlocker('Refund', away), null);
+  });
 });
 
 // --- §5: entry numbers only go forward ----------------------------------------

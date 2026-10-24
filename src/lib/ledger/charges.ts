@@ -20,7 +20,7 @@
 
 import type { Allocation, PostedCharge } from '../fee/types.ts';
 import { allocatePayment, applyCreditToCharge } from '../fee/allocation.ts';
-import { computeAgeing, type AgeingResult } from '../fee/ageing.ts';
+import { computeAgeing, type AgeingBucket, type AgeingResult } from '../fee/ageing.ts';
 import { chronological, computeEntryBalance } from './balance.ts';
 import { entryResolver, reversedEntryIds } from './entries.ts';
 import type { LedgerEntry, LedgerEntryType } from './types.ts';
@@ -337,6 +337,45 @@ export function ageingOf(state: ChargeState, today: string): AgeingResult {
 /** The unpaid rupees past their due date — the "Overdue" figure of §54. */
 export function overdueTotal(state: ChargeState, today: string): number {
   return ageingOf(state, today).overdueTotal;
+}
+
+/** Per-student overdue as the directory, dashboard and profile print it (§13, §14, §22.3, §24). */
+export interface StudentAgeing {
+  /** Unpaid rupees past their due date, after allocation (§24.1). */
+  overdue: number;
+  /** How long the oldest unpaid past-due charge has been overdue — the defaulter column (§13). */
+  oldestDays: number;
+  /** Due date of that oldest past-due charge; null when nothing is overdue. */
+  oldestDueDate: string | null;
+  buckets: Record<AgeingBucket, number>;
+}
+
+/**
+ * One ageing pass over the whole ledger, keyed by SNO. The same charge state the
+ * ledger prints feeds it, so the directory's tab, its age filter, the balance
+ * marker, the profile and the dashboard tiles can never disagree — there is no
+ * second arithmetic path.
+ */
+export function ageingByStudent(
+  entries: readonly LedgerEntry[],
+  today: string,
+): Map<number, StudentAgeing> {
+  const out = new Map<number, StudentAgeing>();
+  for (const [sno, state] of chargeStatesByStudent(entries)) {
+    const ageing = ageingOf(state, today);
+    let oldestDueDate: string | null = null;
+    for (const charge of state.charges) {
+      if (charge.unpaid <= 0 || charge.dueDate >= today) continue;
+      if (!oldestDueDate || charge.dueDate < oldestDueDate) oldestDueDate = charge.dueDate;
+    }
+    out.set(sno, {
+      overdue: ageing.overdueTotal,
+      oldestDays: ageing.oldestDays,
+      oldestDueDate,
+      buckets: ageing.buckets,
+    });
+  }
+  return out;
 }
 
 /**

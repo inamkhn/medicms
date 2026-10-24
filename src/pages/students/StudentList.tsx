@@ -23,15 +23,18 @@ import {
 import { useAuthStore, useStudentStore, useSettingsStore, useAuditStore, useLedgerStore, useDirectoryStore, useAcademicStore, can } from '@/stores';
 import { canWrite } from '@/stores/authStore';
 import { AcademicSelector, type AcademicSelection } from '@/components/academic/AcademicSelector';
+import { csvText, studentExportRows, summarizeFilters } from '@/lib/studentExport';
 
 import { getStudentsWithBalanceLive } from '@/lib/balance';
+import { ageingByStudent } from '@/lib/ledger';
+import { inAgeRange, type AgeRange } from '@/lib/fee/ageing';
 import {
   SEMESTER_OPTIONS,
   getSubCourseDef,
 } from '@/lib/constants';
 import { cn, formatBalanceDisplay, formatDate, formatPKR, getTermLabel, pluralize } from '@/lib/utils';
 import { dayKey } from '@/lib/dates';
-import type { ProgramCode, Semester } from '@/types';
+import type { ProgramCode, Semester, StudentWithBalance } from '@/types';
 
 // --- Sub-course info cache (getSubCourseDef resolved once per program code) ---
 interface SubCourseInfo {
@@ -68,9 +71,14 @@ function TermCell({ program, semester }: { program: ProgramCode; semester: Semes
   return <span className="text-slate-600">{getTermLabel(info.system, semester)}</span>;
 }
 
-function BalanceCell({ balance }: { balance: number }) {
+function BalanceCell({ balance, overdue }: { balance: number; overdue: number }) {
   const display = formatBalanceDisplay(balance);
-  return <span className={display.color}>{display.label}</span>;
+  return (
+    <div>
+      <span className={display.color}>{display.label}</span>
+      {overdue > 0 && <div className="mt-0.5 text-micro text-dues">{formatPKR(overdue)} overdue</div>}
+    </div>
+  );
 }
 
 // --- Sorting ---
@@ -135,7 +143,10 @@ function getPageNumbers(current: number, total: number): (number | '…')[] {
 }
 
 // --- Status filter values ---
-type StatusFilter = 'all' | 'active' | 'dues' | 'credit' | 'struck_off';
+type StatusFilter = 'all' | 'active' | 'dues' | 'overdue' | 'credit' | 'struck_off' | 'completed' | 'on_leave';
+
+// §22.3 overdue-age filter values; the tokens double as the address parameter.
+const AGE_VALUES = ['any', 'd1to30', 'd31to60', 'd61to90', 'over90'] as const;
 
 // §22.5 toggleable columns (Photo/SNO/Name/Actions are always shown and not listed).
 const COLUMNS: { id: string; label: string }[] = [
@@ -148,8 +159,13 @@ const COLUMNS: { id: string; label: string }[] = [
   { id: 'regDate', label: 'Reg date' },
   { id: 'lastPay', label: 'Last payment' },
   { id: 'balance', label: 'Balance' },
+  { id: 'overdueAmt', label: 'Overdue amount' },
+  { id: 'oldestDue', label: 'Oldest due date' },
   { id: 'status', label: 'Status' },
 ];
+
+// §22.5 extras start hidden — the column chooser switches them on.
+const DEFAULT_HIDDEN = ['overdueAmt', 'oldestDue'];
 
 export default function StudentList() {
   const navigate = useNavigate();
@@ -164,8 +180,9 @@ export default function StudentList() {
   // §28 gates read the one shared rule set, never ad-hoc role names.
   const canImport = can(role, 'data.import');
   const canBulkStrike = can(role, 'student.bulkStrike');
-  // §28: a counter operator may export, but the file must not carry balances.
-  const seesBalances = role !== 'Counter';
+  // §23.1: a counter operator's export is the doc's five columns — no phone,
+  // CNIC or balances. Everyone else exports the full import layout.
+  const countersOnly = role === 'Counter';
   const storeStudents = useStudentStore((s) => s.students);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
   const ledgerEntries = useLedgerStore((s) => s.entries);
@@ -178,7 +195,7 @@ export default function StudentList() {
   const removeView = useDirectoryStore((s) => s.removeView);
   const setHiddenColumns = useDirectoryStore((s) => s.setHiddenColumns);
   const myViews = useMemo(() => allViews.filter((v) => v.owner === userName), [allViews, userName]);
-  const hiddenColumns = hiddenColumnsMap[userName] ?? [];
+  const hiddenColumns = hiddenColumnsMap[userName] ?? DEFAULT_HIDDEN;
 
   // §22.3 — every filter, the sort and the page live in the page address so a view
   // can be bookmarked, shared or deep-linked from the dashboard. Local state is the
@@ -189,7 +206,7 @@ export default function StudentList() {
     const v = searchParams.get(k);
     return v && (allowed as readonly string[]).includes(v) ? (v as T) : def;
   };
-  const STATUS_VALUES = ['all', 'active', 'dues', 'credit', 'struck_off'] as const;
+  const STATUS_VALUES = ['all', 'active', 'dues', 'overdue', 'credit', 'struck_off', 'completed', 'on_leave'] as const;
   const SORT_KEYS = ['sno', 'name', 'balance', 'lastPay'] as const;
 
   const [searchInput, setSearchInput] = useState(searchParams.get('q') ?? '');
@@ -209,6 +226,7 @@ export default function StudentList() {
   const [regFrom, setRegFrom] = useState(searchParams.get('from') ?? '');
   const [regTo, setRegTo] = useState(searchParams.get('to') ?? '');
   const [noCharge, setNoCharge] = useState<'all' | 'yes' | 'no'>(oneOf('nocharge', ['all', 'yes', 'no'] as const, 'all'));
+  const [ageFilter, setAgeFilter] = useState<AgeRange>(oneOf('age', AGE_VALUES, 'any'));
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [page, setPage] = useState(num('page'));
   const [pageSize, setPageSize] = useState(() => { const s = parseInt(searchParams.get('size') ?? '20', 10); return [20, 50, 100].includes(s) ? s : 20; });
@@ -258,6 +276,12 @@ export default function StudentList() {
     }
     return set;
   }, [ledgerEntries]);
+
+  // §22.3/§22.5 per-student overdue, from the same charge state the ledger prints.
+  // One pass per ledger change keeps the tab, the age filter and the balance marker
+  // on identical numbers — and the dashboard reads this same helper.
+  const today = dayKey();
+  const ageingBySno = useMemo(() => ageingByStudent(ledgerEntries, today), [ledgerEntries, today]);
 
   // §38/§46 The academic filters are the shared AcademicSelector, and this page keeps
   // its own state in legacy terms (students are stored by program code, session and
@@ -318,10 +342,11 @@ export default function StudentList() {
     if (regFrom) p.set('from', regFrom);
     if (regTo) p.set('to', regTo);
     if (noCharge !== 'all') p.set('nocharge', noCharge);
+    if (ageFilter !== 'any') p.set('age', ageFilter);
     if (page > 1) p.set('page', String(page));
     if (pageSize !== 20) p.set('size', String(pageSize));
     setSearchParams(p, { replace: true });
-  }, [search, courseFilter, programFilter, batchFilter, sessionFilter, semesterFilter, includeCompleted, statusFilter, sortKey, sortDir, balMin, balMax, regFrom, regTo, noCharge, page, pageSize, setSearchParams]);
+  }, [search, courseFilter, programFilter, batchFilter, sessionFilter, semesterFilter, includeCompleted, statusFilter, sortKey, sortDir, balMin, balMax, regFrom, regTo, noCharge, ageFilter, page, pageSize, setSearchParams]);
 
   // Changing any filter invalidates a bulk selection so it can never act on rows the
   // user can no longer see.
@@ -332,8 +357,9 @@ export default function StudentList() {
   const updateSemester = (v: string) => { setSemesterFilter(v); setPage(1); resetSelection(); };
   const updateStatus = (v: StatusFilter) => {
     setStatusFilter(v);
-    // Spec §8.8: Defaulters tab defaults to balance descending (highest dues first)
-    if (v === 'dues') { setSortKey('balance'); setSortDir('desc'); }
+    // Spec §8.8: the dues and overdue tabs default to balance descending — the
+    // biggest debt first, the same rank the dashboard's top defaulters use.
+    if (v === 'dues' || v === 'overdue') { setSortKey('balance'); setSortDir('desc'); }
     setPage(1); resetSelection();
   };
   const updatePageSize = (v: string) => { setPageSize(parseInt(v, 10)); setPage(1); };
@@ -344,6 +370,7 @@ export default function StudentList() {
   const updateRegFrom = (v: string) => { setRegFrom(v); setPage(1); resetSelection(); };
   const updateRegTo = (v: string) => { setRegTo(v); setPage(1); resetSelection(); };
   const updateNoCharge = (v: 'all' | 'yes' | 'no') => { setNoCharge(v); setPage(1); resetSelection(); };
+  const updateAge = (v: AgeRange) => { setAgeFilter(v); setPage(1); resetSelection(); };
 
   // Apply filters — search parity with GlobalSearch (§22.2).
   const filteredStudents = allStudents.filter((s) => {
@@ -379,10 +406,13 @@ export default function StudentList() {
     if (sessionFilter !== 'all' && s.session.toString() !== sessionFilter) return false;
     if (semesterFilter !== 'all' && s.semester !== semesterFilter) return false;
 
-    // Status filter
-    if (statusFilter === 'active' && s.struckOff) return false;
+    // Status filter (§26.5: completed leaves the active counts and defaulter lists)
+    if (statusFilter === 'active' && (s.struckOff || s.completed || s.onLeave)) return false;
     if (statusFilter === 'struck_off' && !s.struckOff) return false;
-    if (statusFilter === 'dues' && (s.computedBalance <= 0 || s.struckOff)) return false;
+    if (statusFilter === 'completed' && !s.completed) return false;
+    if (statusFilter === 'on_leave' && !s.onLeave) return false;
+    if (statusFilter === 'dues' && (s.computedBalance <= 0 || s.struckOff || s.completed)) return false;
+    if (statusFilter === 'overdue' && (s.struckOff || s.completed || (ageingBySno.get(s.sno)?.overdue ?? 0) <= 0)) return false;
     if (statusFilter === 'credit' && s.computedBalance >= 0) return false;
 
     // Balance range — combines with every other filter (§30).
@@ -397,6 +427,10 @@ export default function StudentList() {
     const hasCharge = chargedCurrent.has(`${s.sno}|${s.semester}`);
     if (noCharge === 'yes' && hasCharge) return false;
     if (noCharge === 'no' && !hasCharge) return false;
+
+    // §22.3 overdue-age filter — the student's oldest unpaid past-due charge sets
+    // the age, so "61 to 90" finds rows the ledger labels 61 to 90 days overdue.
+    if (ageFilter !== 'any' && !inAgeRange(ageingBySno.get(s.sno)?.oldestDays ?? 0, ageFilter)) return false;
 
     return true;
   });
@@ -426,25 +460,31 @@ export default function StudentList() {
   // Chip stats
   const stats: Record<StatusFilter, number> = {
     all: allStudents.length,
-    active: allStudents.filter((s) => !s.struckOff).length,
-    dues: allStudents.filter((s) => !s.struckOff && s.computedBalance > 0).length,
+    active: allStudents.filter((s) => !s.struckOff && !s.completed && !s.onLeave).length,
+    dues: allStudents.filter((s) => !s.struckOff && !s.completed && s.computedBalance > 0).length,
+    overdue: allStudents.filter((s) => !s.struckOff && !s.completed && (ageingBySno.get(s.sno)?.overdue ?? 0) > 0).length,
     credit: allStudents.filter((s) => s.computedBalance < 0).length,
     struck_off: allStudents.filter((s) => s.struckOff).length,
+    completed: allStudents.filter((s) => s.completed).length,
+    on_leave: allStudents.filter((s) => s.onLeave).length,
   };
 
   const statusChips: { value: StatusFilter; label: string }[] = [
     { value: 'all', label: 'All' },
     { value: 'active', label: 'Active' },
     { value: 'dues', label: 'With Dues' },
+    { value: 'overdue', label: 'Overdue' },
     { value: 'credit', label: 'Credit' },
     { value: 'struck_off', label: 'Struck Off' },
+    { value: 'completed', label: 'Completed' },
+    { value: 'on_leave', label: 'On Leave' },
   ];
 
   const hasActiveFilters =
     search !== '' || courseFilter !== 'all' || programFilter !== 'all' ||
     batchFilter !== 'all' || sessionFilter !== 'all' || semesterFilter !== 'all' ||
     statusFilter !== 'all' || balMin !== '' || balMax !== '' || regFrom !== '' ||
-    regTo !== '' || noCharge !== 'all';
+    regTo !== '' || noCharge !== 'all' || ageFilter !== 'any';
 
   const clearFilters = () => {
     setSearchInput('');
@@ -457,6 +497,7 @@ export default function StudentList() {
     setIncludeCompleted(false);
     setStatusFilter('all');
     setBalMin(''); setBalMax(''); setRegFrom(''); setRegTo(''); setNoCharge('all');
+    setAgeFilter('any');
     setPage(1);
     resetSelection();
   };
@@ -527,27 +568,52 @@ export default function StudentList() {
     setBalMin(p.get('balmin') ?? ''); setBalMax(p.get('balmax') ?? '');
     setRegFrom(p.get('from') ?? ''); setRegTo(p.get('to') ?? '');
     setNoCharge((p.get('nocharge') as 'all' | 'yes' | 'no') ?? 'all');
+    const age = p.get('age') ?? 'any';
+    setAgeFilter((AGE_VALUES as readonly string[]).includes(age) ? (age as AgeRange) : 'any');
     setPage(parseInt(p.get('page') ?? '1', 10) || 1);
     const s = parseInt(p.get('size') ?? '20', 10); setPageSize([20, 50, 100].includes(s) ? s : 20);
     resetSelection();
     setViewsOpen(false);
   };
 
-  const exportSelectedCSV = () => {
-    const picked = sortedStudents.filter((s) => effectiveSelected.has(s.sno));
-    // §28: a counter operator exports without the balance column.
-    const baseHeader = ['SNO','Name','Father','Course','Sub-course','Batch','Session','Term','Contact','CNIC','Reg Date','Status','Last Payment'];
-    const header = seesBalances ? [...baseHeader, 'Balance'] : baseHeader;
-    const rows = picked.map(s => {
-      const info = getSubCourseInfo(s.program);
-      const status = s.struckOff ? 'Struck Off' : s.computedBalance > 0 ? 'Dues' : s.computedBalance < 0 ? 'Credit' : 'Active';
-      const base = [s.sno, s.name, s.fatherName, info.courseLabel, info.subLabel, s.batch, s.session, getTermLabel(info.system, s.semester), s.contact ?? '', s.cnic ?? '', s.regDate, status, lastPayBySno.get(s.sno) ?? ''];
-      return seesBalances ? [...base, s.computedBalance] : base;
+  // §23.1: every export is written to the audit trail — who, when, the filters
+  // used and how many rows. The layout is the import's, so the file round-trips.
+  const auditExport = (rows: number, scope: 'filtered' | 'selected') => {
+    const filters = summarizeFilters({
+      q: search,
+      course: courseFilter,
+      program: programFilter,
+      batch: batchFilter,
+      session: sessionFilter,
+      term: semesterFilter,
+      status: statusFilter,
+      balance: balMin || balMax ? `${balMin || '*'}..${balMax || '*'}` : '',
+      registered: regFrom || regTo ? `${regFrom || '*'}..${regTo || '*'}` : '',
+      nocharge: noCharge,
+      age: ageFilter,
     });
-    const csv = [header, ...rows].map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\n');
+    useAuditStore.getState().addLog({
+      user: userName,
+      action: 'Export',
+      details: `Exported ${rows} student${rows === 1 ? '' : 's'} (${scope} import-layout CSV; ${countersOnly ? 'counter columns' : 'full columns'}; filters: ${filters})`,
+    });
+  };
+
+  const downloadExport = (students: readonly StudentWithBalance[], scope: 'filtered' | 'selected') => {
+    const { header, rows } = studentExportRows(students, countersOnly);
+    const csv = csvText(header, rows);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a'); link.href = url; link.download = `students-selected-${dayKey()}.csv`; link.click(); URL.revokeObjectURL(url);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `students-${scope}-${dayKey()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    auditExport(students.length, scope);
+  };
+
+  const exportSelectedCSV = () => {
+    downloadExport(sortedStudents.filter((s) => effectiveSelected.has(s.sno)), 'selected');
   };
   const closeBulkModal = () => { setShowBulkStrike(false); setBulkResult(null); setBulkReason(''); };
   const handleBulkStrike = () => {
@@ -576,35 +642,7 @@ export default function StudentList() {
     closeBulkModal();
   };
   const exportCSV = () => {
-    // §28 + §22.5: same layout for all filtered rows; a counter operator gets no
-    // balance column. Last payment is included so the file matches the directory.
-    const baseHeader = [
-      'SNO', 'Name', 'Father', 'Course', 'Sub-course', 'Batch', 'Session',
-      'Term', 'Contact', 'CNIC', 'Reg Date', 'Status', 'Last Payment',
-    ];
-    const header = seesBalances ? [...baseHeader, 'Balance'] : baseHeader;
-    const rows = sortedStudents.map((s) => {
-      const info = getSubCourseInfo(s.program);
-      const status = s.struckOff
-        ? 'Struck Off'
-        : s.computedBalance > 0 ? 'Dues' : s.computedBalance < 0 ? 'Credit' : 'Active';
-      const base = [
-        s.sno, s.name, s.fatherName, info.courseLabel, info.subLabel, s.batch,
-        s.session, getTermLabel(info.system, s.semester), s.contact ?? '',
-        s.cnic ?? '', s.regDate, status, lastPayBySno.get(s.sno) ?? '',
-      ];
-      return seesBalances ? [...base, s.computedBalance] : base;
-    });
-    const csv = [header, ...rows]
-      .map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-      .join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `students-${dayKey()}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadExport(sortedStudents, 'filtered');
   };
 
   const isFreshInstall = allStudents.length === 0;
@@ -794,7 +832,10 @@ export default function StudentList() {
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="active">Active</SelectItem>
                 <SelectItem value="struck_off">Struck Off</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="on_leave">On Leave</SelectItem>
                 <SelectItem value="dues">With Dues</SelectItem>
+                <SelectItem value="overdue">Overdue</SelectItem>
                 <SelectItem value="credit">Credit</SelectItem>
               </SelectContent>
             </Select>
@@ -819,6 +860,20 @@ export default function StudentList() {
                 <SelectItem value="all">Fee charge: any</SelectItem>
                 <SelectItem value="yes">No charge this term</SelectItem>
                 <SelectItem value="no">Charged this term</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* §22.3 Overdue age — reads the oldest unpaid past-due charge */}
+            <Select value={ageFilter} onValueChange={(v) => updateAge(v as AgeRange)}>
+              <SelectTrigger className="w-44 h-7 text-body">
+                <SelectValue placeholder="Overdue age" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="any">Overdue age: any</SelectItem>
+                <SelectItem value="d1to30">1–30 days</SelectItem>
+                <SelectItem value="d31to60">31–60 days</SelectItem>
+                <SelectItem value="d61to90">61–90 days</SelectItem>
+                <SelectItem value="over90">Over 90 days</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -924,6 +979,8 @@ export default function StudentList() {
               {showCol('regDate') && <TableHead>Reg Date</TableHead>}
               {showCol('lastPay') && <TableSortHead label="Last payment" sortKey="lastPay" activeKey={sortKey} dir={sortDir} onSort={handleSort} />}
               {showCol('balance') && <TableSortHead label="Balance" sortKey="balance" activeKey={sortKey} dir={sortDir} onSort={handleSort} num />}
+              {showCol('overdueAmt') && <TableHead className="text-right">Overdue</TableHead>}
+              {showCol('oldestDue') && <TableHead>Oldest due</TableHead>}
               {showCol('status') && <TableHead>Status</TableHead>}
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -957,7 +1014,24 @@ export default function StudentList() {
                 {showCol('contact') && <TableCell className="text-slate-600">{student.contact ?? '—'}</TableCell>}
                 {showCol('regDate') && <TableCell className="text-slate-600">{formatDate(student.regDate)}</TableCell>}
                 {showCol('lastPay') && <TableCell className="text-slate-600">{(() => { const d = lastPayBySno.get(student.sno); return d ? formatDate(d) : '—'; })()}</TableCell>}
-                {showCol('balance') && <TableCell><BalanceCell balance={student.computedBalance} /></TableCell>}
+                {showCol('balance') && (
+                  <TableCell>
+                    <BalanceCell
+                      balance={student.computedBalance}
+                      overdue={ageingBySno.get(student.sno)?.overdue ?? 0}
+                    />
+                  </TableCell>
+                )}
+                {showCol('overdueAmt') && (
+                  <TableCell className="text-right tabular-nums text-dues">
+                    {(() => { const aged = ageingBySno.get(student.sno); return aged && aged.overdue > 0 ? formatPKR(aged.overdue) : '—'; })()}
+                  </TableCell>
+                )}
+                {showCol('oldestDue') && (
+                  <TableCell className="text-slate-600">
+                    {(() => { const due = ageingBySno.get(student.sno)?.oldestDueDate; return due ? formatDate(due) : '—'; })()}
+                  </TableCell>
+                )}
                 {showCol('status') && (
                   <TableCell>
                     <StudentStatusBadge badge={student.badge} balance={student.computedBalance} />
@@ -990,7 +1064,7 @@ export default function StudentList() {
         {sortedStudents.length === 0 && (
           <div className="text-center py-16">
             <SearchX size={40} className="mx-auto text-slate-300" />
-            <p className="mt-3 text-slate-600 font-medium">No students match these filters — try clearing Batch or Semester.</p>
+            <p className="mt-3 text-slate-600 font-medium">No students match. Clear filters or admit a new student.</p>
             <p className="text-sm text-slate-400 mt-1">Filters and search combine; clearing one often resolves it.</p>
             {hasActiveFilters && (
               <Button variant="outline" size="sm" className="mt-4" onClick={clearFilters}>

@@ -96,7 +96,6 @@ export interface NewAdvanceDrawerProps {
 export function NewAdvanceDrawer({ open, staff, onOpenChange }: NewAdvanceDrawerProps) {
   const user = useAuthStore((s) => s.user);
   const accounts = useMoneyStore((s) => s.accounts);
-  const entries = useMoneyStore((s) => s.entries);
   const existingAdvances = usePayrollStore((s) => s.advances);
   const advanceEvents = usePayrollStore((s) => s.advanceEvents);
   // §60 the recovery rows are Settings defaults — the Admin can still change
@@ -217,7 +216,7 @@ export function NewAdvanceDrawer({ open, staff, onOpenChange }: NewAdvanceDrawer
           )}
 
           <Field label="Staff" required htmlFor="advStaff" error={errors.staffId}>
-            <Select value={draft.staffId || undefined} onValueChange={(v) => set('staffId', v)}>
+            <Select value={draft.staffId} onValueChange={(v) => set('staffId', v)}>
               <SelectTrigger id="advStaff"><SelectValue placeholder="Select staff…" /></SelectTrigger>
               <SelectContent>
                 {staff.map((s) => <SelectItem key={s.id} value={s.id}>{s.fullName} / {s.staffNo}</SelectItem>)}
@@ -258,15 +257,17 @@ export function NewAdvanceDrawer({ open, staff, onOpenChange }: NewAdvanceDrawer
 
           <div className="grid grid-cols-2 gap-3 border-t border-hairline-soft pt-3">
             <Field label="Payment mode" htmlFor="advMethod" hint="Set now; the money movement is recorded at payment (P14).">
-              <Select value={draft.method || undefined} onValueChange={(v) => { set('method', v as PayoutMode); set('payoutAccountId', ''); }}>
+              {/* Optional at filing (§14): stays controlled and is clearable back to "Not set". */}
+              <Select value={draft.method || '__none'} onValueChange={(v) => { set('method', v === '__none' ? '' : (v as PayoutMode)); set('payoutAccountId', ''); }}>
                 <SelectTrigger id="advMethod"><SelectValue placeholder="Not set" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="__none">Not set</SelectItem>
                   {PAYOUT_MODES.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
                 </SelectContent>
               </Select>
             </Field>
             <Field label="Money account" htmlFor="advAccount">
-              <Select value={draft.payoutAccountId || undefined} onValueChange={(v) => set('payoutAccountId', v)} disabled={!draft.method}>
+              <Select value={draft.payoutAccountId} onValueChange={(v) => set('payoutAccountId', v)} disabled={!draft.method}>
                 <SelectTrigger id="advAccount"><SelectValue placeholder="Select account" /></SelectTrigger>
                 <SelectContent>
                   {activeAccounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
@@ -279,7 +280,6 @@ export function NewAdvanceDrawer({ open, staff, onOpenChange }: NewAdvanceDrawer
           </div>
 
           {(() => {
-            void entries;
             const balanceAfter = requested - firstRecovery;
             return (
               <div className="rounded-control border border-hairline bg-surface p-3">

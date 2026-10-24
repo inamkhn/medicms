@@ -26,6 +26,12 @@ export interface FinanceLimits {
   chequeStaleMonths: number;
   /** §77/§25: the payment terms a new vendor starts with, in days. */
   vendorDefaultTermsDays: number;
+  /** §77/§41.4: an unmatched entry still in transit reads inside this many days. */
+  statementInTransitDays: number;
+  /** §77/§47: the budget's first alert, a percentage of the month's plan. */
+  budgetNoticePercent: number;
+  /** §77/§47: the budget's warning line, a percentage of the month's plan. */
+  budgetWarningPercent: number;
 }
 
 /** The §77 "Default" column, exactly. */
@@ -39,6 +45,9 @@ export const DEFAULT_FINANCE_LIMITS: FinanceLimits = {
   accountantBackDateDays: 7,
   chequeStaleMonths: 6,
   vendorDefaultTermsDays: 30,
+  statementInTransitDays: 5,
+  budgetNoticePercent: 80,
+  budgetWarningPercent: 100,
 };
 
 /** §77's own wording for each limit, so Settings lists them as the doc names them. */
@@ -52,6 +61,9 @@ export const FINANCE_LIMIT_LABELS: Record<keyof FinanceLimits, string> = {
   accountantBackDateDays: 'Accountant back-dating (days)',
   chequeStaleMonths: 'Cheque stale after (months)',
   vendorDefaultTermsDays: 'Default vendor payment terms (days)',
+  statementInTransitDays: 'In-transit window for unmatched entries (days)',
+  budgetNoticePercent: 'Budget notice alert (percent of plan)',
+  budgetWarningPercent: 'Budget warning alert (percent of plan)',
 };
 
 /** How each limit's default reads on screen — only the rupee caps show a
@@ -68,4 +80,7 @@ export const FINANCE_LIMIT_UNITS: Record<keyof FinanceLimits, FinanceLimitUnit> 
   accountantBackDateDays: 'days',
   chequeStaleMonths: 'months',
   vendorDefaultTermsDays: 'days',
+  statementInTransitDays: 'days',
+  budgetNoticePercent: 'percent',
+  budgetWarningPercent: 'percent',
 };

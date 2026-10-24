@@ -2,7 +2,7 @@
 // MediCMS Desktop v4.0 - New Admission
 // ============================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ReceiptDoc, type ReceiptSize } from '@/components/receipts/ReceiptDoc';
 import { StudentIdCard } from '@/components/students/StudentIdCard';
-import { FeeBreakdownTable } from '@/components/students/FeeBreakdownTable';
+import { FeePlanEditor } from '@/components/students/FeePlanEditor';
 import { 
   Select, 
   SelectContent, 
@@ -27,9 +27,12 @@ import { dayKey } from '@/lib/dates';
 import { nowISO } from '@/lib/txn';
 import { termIndexOf } from '@/lib/promotion';
 import { admissionSchema, type AdmissionFormData } from '@/lib/schemas';
-import { legacyPlanFor, templateTotalOf } from '@/lib/fee/templateCompat';
+import { legacyPlanFor, termFeesOf } from '@/lib/fee/templateCompat';
+import { planPreview } from '@/lib/fee/planPreview';
+import type { ConcessionRecord } from '@/lib/fee/types';
 import { findActiveFor } from '@/lib/fee/templateRules';
-import { entryId, entryProblems, feeChargeEntry } from '@/lib/ledger';
+import { entryId, entryProblems, feeChargeEntry, admissionDueDateOf } from '@/lib/ledger';
+import { activeBookFor, bookGate, bookSummaries, formatReceiptNo, receiptFactsOf } from '@/lib/receipts';
 import { useStudentStore, getNextSno } from '@/stores/studentStore';
 import { useAuditStore, useAuthStore, useLedgerStore, useReceiptBookStore, useMoneyStore, useSettingsStore, useFeeTemplateStore } from '@/stores';
 import {
@@ -47,6 +50,11 @@ import type { LedgerEntry, PaymentMode } from '@/types';
 import type { ProgramCode, CourseCode, Semester, Student } from '@/types';
 
 type Step = 1 | 2 | 3 | 4;
+
+/** Every whole number from `from` to `to` inclusive; empty when `to < from`. */
+function numberRange(from: number, to: number): number[] {
+  return to < from ? [] : Array.from({ length: to - from + 1 }, (_, i) => from + i);
+}
 
 export default function NewAdmission() {
   const navigate = useNavigate();
@@ -70,6 +78,8 @@ export default function NewAdmission() {
       gender: '',
       domicile: '',
       emergencyContact: '',
+      guardianName: '',
+      guardianPhone: '',
       course: '',
       program: '',
       semester: '1st',
@@ -119,16 +129,33 @@ export default function NewAdmission() {
   // What the student locks to, derived from that template's components (§7.4).
   const openingPlan = feeTemplate ? legacyPlanFor(feeTemplate, startTerm) : null;
 
-  // Fee lock (spec §4.2 Step 3): template lines are read-only; concession is the only editable input.
-  const templateTotal = feeTemplate ? templateTotalOf(feeTemplate, startTerm) : 0;
-  const [concession, setConcession] = useState(0);
+  // Fee lock (spec §4.2 Step 3): template lines are read-only; every reduction is a
+  // stored concession record with a reason (§13.3-§13.5), priced by the engine (§13.7).
+  const [records, setRecords] = useState<ConcessionRecord[]>([]);
   const templateKey = feeTemplate ? `${feeTemplate.id}:v${feeTemplate.version}:${startTerm}` : `none-${formData.course}-${formData.program}-${formData.semester}`;
   useEffect(() => {
-    setConcession(0);
+    setRecords([]);
   }, [templateKey]);
 
-  const totalFee = Math.max(0, templateTotal - concession);
-  const recurringFee = Math.max(0, (openingPlan?.baseFeeRecurring ?? 0) - concession);
+  // §13.7: the joining term and every later billed term, priced by the engine.
+  const plan = useMemo(
+    () => (feeTemplate ? planPreview(termFeesOf(feeTemplate).terms, records, startTerm) : null),
+    [feeTemplate, records, startTerm],
+  );
+  const templateTotal = plan?.opening.template ?? 0;
+  const totalConcession = plan?.opening.concession ?? 0;
+  const totalFee = plan?.opening.net ?? 0;
+  // The promotion default: the next billed term with the same records applied, so a
+  // term-only waiver never leaks into later terms (§13.4).
+  const recurringFee = plan && plan.terms.length > 1 ? plan.terms[1].net : totalFee;
+
+  // §14/§24.1: the opening charge carries its own due date — the template's admission
+  // rule (14 days) — and the operator can move it, never before the admission date.
+  const [dueDate, setDueDate] = useState('');
+  const admissionDate = formData.regDate || dayKey();
+  const defaultDueDate = admissionDueDateOf(feeTemplate ?? null, admissionDate);
+  const effectiveDueDate = dueDate || defaultDueDate;
+  const dueDateOk = effectiveDueDate >= admissionDate;
 
   // Optional payment collected at admission (payment receipt only if amount > 0)
   const [collectNow, setCollectNow] = useState(false);
@@ -143,20 +170,38 @@ export default function NewAdmission() {
   const [printTarget, setPrintTarget] = useState<'receipt' | 'id'>('receipt');
   const defaultPaper = useSettingsStore((s) => s.paperSize);
   const [receiptSize, setReceiptSize] = useState<ReceiptSize>(defaultPaper);
+  // §24/§25 the number comes from the register, derived — never a stored counter.
   const receiptBooks = useReceiptBookStore((s) => s.books);
-  const getNextReceipt = useReceiptBookStore((s) => s.getNextReceipt);
-  const userNameForReceipt = useAuthStore((s) => s.user?.name) ?? 'Admin';
+  const bookEvents = useReceiptBookStore((s) => s.events);
+  const reprints = useReceiptBookStore((s) => s.reprints);
+  const paymentSettings = useReceiptBookStore((s) => s.paymentSettings);
+  const skipNumbers = useReceiptBookStore((s) => s.skipNumbers);
+  const ledgerEntries = useLedgerStore((s) => s.entries);
+  const userIdForReceipt = useAuthStore((s) => s.user?.id) ?? '';
   const payNum = collectNow ? parseFloat(payAmount) || 0 : 0;
 
-  useEffect(() => {
-    if (step === 4 && payNum <= 0 && !payReceipt) {
-      const next = getNextReceipt(userNameForReceipt);
-      if (next) setPayReceipt(next);
-    }
-  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bookSlot = activeBookFor(
+    bookSummaries(
+      receiptBooks,
+      receiptBooks.flatMap((b) => receiptFactsOf(ledgerEntries, b, new Map(Object.entries(reprints)))),
+      bookEvents,
+    ),
+    userIdForReceipt,
+  );
+  const gate = bookGate(bookSlot, paymentSettings);
+  // §25: a pre-printed book may be used out of order; the slips passed over stay Skipped.
+  const slipValue = Math.trunc(Number(payReceipt.replace(/^#/, '')) || 0);
+  const slipRow = bookSlot?.summary.rows.find((row) => row.number === slipValue);
+  const slipValid = gate.nextNumber !== null && slipValue > gate.nextNumber
+    && slipValue <= (bookSlot?.book.to ?? 0) && slipRow?.status === 'Unused';
+  const receiptNumber = gate.ok ? (slipValid ? slipValue : gate.nextNumber ?? 0) : 0;
+  const receiptRef = bookSlot && receiptNumber ? formatReceiptNo(bookSlot.book.prefix, receiptNumber) : '';
+  const skippedSlips = slipValid && gate.nextNumber !== null ? numberRange(gate.nextNumber, slipValue - 1) : [];
 
-  // Next SNO that will be assigned by the store (centralized helper)
-  const nextSno = getNextSno(students);
+  // Next SNO that will be assigned by the store (centralized helper; the floor
+  // keeps numbers retired by an undo-import from being reused — §27)
+  const snoFloor = useStudentStore((s) => s.snoFloor);
+  const nextSno = getNextSno(students, snoFloor);
 
   // --- Validation ---
   const normalizedCnic = normalizeCNIC(formData.cnic);
@@ -164,6 +209,11 @@ export default function NewAdmission() {
   const contactValid = isValidContact(formData.contact);
   const emergencyValid = isValidContact(formData.emergencyContact);
   const dobValid = !formData.dob || new Date(formData.dob) <= new Date();
+  // §19: a student under 18 needs a guardian with a reachable phone.
+  const ageYears = formData.dob ? Math.floor((Date.now() - new Date(formData.dob).getTime()) / 31_557_600_000) : null;
+  const guardianRequired = ageYears !== null && ageYears < 18;
+  const guardianContactEntered = !(formData.guardianPhone ?? '').trim() || isValidContact(formData.guardianPhone ?? '');
+  const guardianOk = !guardianRequired || ((formData.guardianName ?? '').trim() !== '' && (formData.guardianPhone ?? '').trim() !== '' && guardianContactEntered);
   const step2Valid = !!selectedBatch && !selectedBatch.disabled;
 
   // --- Real duplicate check against the store ---
@@ -178,7 +228,7 @@ export default function NewAdmission() {
     if (cnicDuplicate && s.sno === cnicDuplicate.sno) return true;
     return false;
   });
-  const step1Valid = formData.name.trim() !== '' && formData.fatherName.trim() !== '' && cnicValid && contactValid && emergencyValid && dobValid && !cnicDuplicate;
+  const step1Valid = formData.name.trim() !== '' && formData.fatherName.trim() !== '' && cnicValid && contactValid && emergencyValid && dobValid && !cnicDuplicate && guardianOk && guardianContactEntered;
 
   const [stepBanner, setStepBanner] = useState(false);
   const focusFirstError = (fields: (keyof AdmissionFormData)[]) => {
@@ -189,7 +239,7 @@ export default function NewAdmission() {
 
   const handleNext = async () => {
     if (step === 1) {
-      const fields: (keyof AdmissionFormData)[] = ['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact'];
+      const fields: (keyof AdmissionFormData)[] = ['name','fatherName','contact','cnic','address','regDate','dob','gender','domicile','emergencyContact','guardianName','guardianPhone'];
       const ok = await form.trigger(fields);
       if (ok && step1Valid) { setStepBanner(false); setStep(2); }
       else { setStepBanner(true); focusFirstError(fields); }
@@ -254,14 +304,17 @@ export default function NewAdmission() {
     // Edge: payment guards before creating anything
     if (payNum < 0) { setSubmitError('Payment amount cannot be negative.'); return; }
     if (payNum > totalFee) { setSubmitError(`Payment ${formatPKR(payNum)} exceeds Sem-1 demand ${formatPKR(totalFee)} — reduce amount.`); return; }
+    const badRecord = records.find((r) => !r.reasonCategory || (r.reasonCategory === 'Other' && r.note.trim().length < 3));
+    if (badRecord) { setSubmitError('Every concession needs a category, and "Other" needs a note — records are written to the ledger (§13.5).'); return; }
+    if (effectiveDueDate < admissionDate) { setSubmitError('The opening charge due date cannot be before the admission date (§24.1).'); return; }
     if (payNum > 0) {
-      if (!payReceipt.trim()) { setSubmitError('Receipt number is required when collecting payment.'); return; }
-      const allLedger = useLedgerStore.getState().entries;
-      const dup = allLedger.some((e) => e.type === 'Payment' && e.reference && e.reference.toLowerCase() === payReceipt.trim().toLowerCase());
-      if (dup) { setSubmitError(`Receipt No. ${payReceipt.trim()} already exists.`); return; }
-      const num = parseInt(payReceipt.replace('#', ''), 10);
-      const book = receiptBooks.find((b) => b.isActive && num >= b.start && num <= b.end);
-      if (!book) { setSubmitError(`Receipt ${payReceipt} not in any active book range.`); return; }
+      // §24 no book, no receipt: the gate says which of the two it is.
+      if (!bookSlot) { setSubmitError('No receipt book yet. Ask an Admin to add one before collecting a payment (§24).'); return; }
+      if (!gate.ok) { setSubmitError(gate.problem ?? 'The receipt book cannot issue a number.'); return; }
+      if (bookSlot.book.mode === 'PrePrinted' && !slipValid) {
+        setSubmitError(`Enter the slip number printed on the paper — later than ${gate.nextLabel} and not already used (§25).`);
+        return;
+      }
       if (payMode === 'Cheque' && !payRef.trim()) { setSubmitError('Cheque number is required.'); return; }
     }
     // Edge: future reg date
@@ -280,15 +333,21 @@ export default function NewAdmission() {
       gender: data.gender || null,
       domicile: data.domicile?.trim() || null,
       emergencyContact: normalizeContact(data.emergencyContact),
+      guardianName: data.guardianName?.trim() || null,
+      guardianPhone: normalizeContact(data.guardianPhone),
       course: data.course as CourseCode,
       program: data.program as ProgramCode,
       semester: data.semester as Semester,
       batch: String(data.batch),
       session: sessionNum,
-      // Locked fee: opening charge minus concession; next term's charge reused on promotion
+      // Locked fee: opening charge minus its records; next billed term's net reused on promotion
       baseFeeTotal: totalFee || undefined,
       baseFeeRecurring: recurringFee || totalFee || undefined,
       baseFeeBreakup: openingPlan?.baseFeeBreakup,
+      // §15.2: the plan travels with the student — records and the template version.
+      planConcessions: records.length ? records : undefined,
+      feeTemplateId: feeTemplate?.id,
+      feeTemplateVersion: feeTemplate?.version,
     });
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
     const date = data.regDate || dayKey();
@@ -310,6 +369,7 @@ export default function NewAdmission() {
         amount: templateTotal,
         template: feeTemplate ?? null,
         date,
+        dueDate: effectiveDueDate,
         createdBy: userName,
         description: `Admission fee — ${getSubCourseDef(created.program).sub.label} ${data.semester}`,
         actionNo,
@@ -318,24 +378,35 @@ export default function NewAdmission() {
       batch.push(charge);
       cursor++;
     }
-    // A waiver is its own Concession entry linked to the charge, not a smaller charge (§7.10, §16).
-    if (concession > 0 && chargeEntryId) {
-      batch.push({
-        id: entryId(created.sno, cursor),
-        studentSno: created.sno,
-        entryNo: cursor,
-        date,
-        type: 'Concession',
-        amount: concession,
-        description: `Concession granted at admission — ${getSubCourseDef(created.program).sub.label} ${data.semester}`,
-        reason: `Fee concession granted at admission for ${created.name}`,
-        linkedEntryId: chargeEntryId,
-        createdBy: userName,
-        createdAt: nowISO(),
-        actionNo,
-        balanceAfter: 0,
-      });
-      cursor++;
+    // Each record posts as its own Concession entry linked to the charge, not a smaller
+    // charge (§7.10, §13.3); the amount is what the engine actually removed.
+    if (chargeEntryId) {
+      const recordTarget = (record: ConcessionRecord) => {
+        const t = record.target;
+        return t.kind === 'plan'
+          ? 'whole plan'
+          : plan?.opening.lines.find((l) => l.componentId === t.componentId)?.name ?? 'component';
+      };
+      for (const applied of plan?.opening.applied ?? []) {
+        const record = records.find((r) => r.id === applied.concessionId);
+        if (!record || applied.amount <= 0) continue;
+        batch.push({
+          id: entryId(created.sno, cursor),
+          studentSno: created.sno,
+          entryNo: cursor,
+          date,
+          type: 'Concession',
+          amount: applied.amount,
+          description: `Concession — ${record.reasonCategory} · ${recordTarget(record)}`,
+          reason: `${record.reasonCategory}${record.note ? ` — ${record.note}` : ''} — concession granted at admission for ${created.name}`,
+          linkedEntryId: chargeEntryId,
+          createdBy: userName,
+          createdAt: nowISO(),
+          actionNo,
+          balanceAfter: 0,
+        });
+        cursor++;
+      }
     }
     // Optional on-the-spot money → a Payment entry (§6), reference holds the receipt number.
     let payEntry: LedgerEntry | null = null;
@@ -348,7 +419,7 @@ export default function NewAdmission() {
         type: 'Payment',
         amount: payNum,
         description: payMode === 'Cash' ? 'Admission-time collection' : `${payMode}${payRef ? ` Ref ${payRef.trim()}` : ''} — admission-time collection`,
-        reference: payReceipt.trim(),
+        reference: receiptRef,
         paymentMode: payMode,
         createdBy: userName,
         createdAt: nowISO(),
@@ -373,19 +444,24 @@ export default function NewAdmission() {
         setSaving(false);
         return;
       }
-      moneyEntry = paymentMoneyEntry(
-        {
-          accountId: moneyAccount.id,
-          amount: payNum,
-          mode: payMode,
-          payee: `${created.name} (SNO ${created.sno})`,
-          receiptNo: payReceipt.trim(),
-          moneyRef: payRef.trim() || undefined,
-          date,
-          createdBy: userName,
-        },
-        { entryNo: nextMoneyEntryNo(moneyState.entries), actionNo: nextActionNo(moneyState.entries), now: nowISO() },
-      );
+      moneyEntry = {
+        ...paymentMoneyEntry(
+          {
+            accountId: moneyAccount.id,
+            amount: payNum,
+            mode: payMode,
+            payee: `${created.name} (SNO ${created.sno})`,
+            receiptNo: receiptRef,
+            moneyRef: payRef.trim() || undefined,
+            date,
+            createdBy: userName,
+          },
+          { entryNo: nextMoneyEntryNo(moneyState.entries), actionNo: nextActionNo(moneyState.entries), now: nowISO() },
+        ),
+        // §32/§58: keep the student on the held cheque so the register can name
+        // the row and post a bounce fine to the right ledger.
+        studentSno: created.sno,
+      };
       moneyProblems.push(...moneyEntryProblems(moneyEntry, {
         accounts: moneyState.accounts,
         entries: moneyState.entries,
@@ -408,12 +484,15 @@ export default function NewAdmission() {
         user: userName,
         action: 'Fee Demand',
         studentSno: created.sno,
-        details: `Admission demand ${formatPKR(totalFee)} (recurring ${formatPKR(recurringFee)}) · ${created.batch}`,
+        details: `Admission demand ${formatPKR(templateTotal)}${totalConcession > 0 ? ` · concession ${formatPKR(totalConcession)} (${records.map((r) => r.reasonCategory).join(', ')})` : ''} · net ${formatPKR(totalFee)} (recurring ${formatPKR(recurringFee)}) · due ${effectiveDueDate} · ${created.batch}`,
       });
     }
     // Receipt-book consume + the money entry for the collected cash (§8, §18, §32).
     if (payNum > 0 && payEntry) {
-      useReceiptBookStore.getState().useReceipt(payReceipt.trim(), userName);
+      // §25: every slip passed over to reach a later one stays visible as Skipped.
+      if (bookSlot && skippedSlips.length) {
+        skipNumbers(bookSlot.book.id, skippedSlips, `Slip ${receiptRef} used out of order`, userName, nowISO());
+      }
       // §8: the money entry replaces the hand-typed bank deposit — the
       // pre-check above asked the same rules, so a refusal here would mean the
       // books changed between two lines; say so rather than lose it.
@@ -430,14 +509,14 @@ export default function NewAdmission() {
         user: userName,
         action: 'Payment',
         studentSno: created.sno,
-        details: `Admission-time ${formatPKR(payNum)} · ${payMode} · Rcpt ${payReceipt.trim()}`,
+        details: `Admission-time ${formatPKR(payNum)} · ${payMode} · Rcpt ${receiptRef}`,
       });
     }
     useAuditStore.getState().addLog({
       user: userName,
       action: 'New Admission',
       studentSno: created.sno,
-      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch} · Fee ${formatPKR(totalFee)}${payEntry ? ` · Paid ${formatPKR(payNum)}` : ''}`,
+      details: `${created.name} · ${getSubCourseDef(created.program).sub.label} · ${created.batch} · Fee ${formatPKR(totalFee)}${totalConcession > 0 ? ` (waived ${formatPKR(totalConcession)})` : ''}${payEntry ? ` · Paid ${formatPKR(payNum)}` : ''}`,
     });
     setSuccessPay(payEntry);
     setSuccessDemandTotal(totalFee);
@@ -498,7 +577,7 @@ export default function NewAdmission() {
               </Button>
             </div>
             <div className="flex flex-wrap justify-center gap-2 mt-5">
-              <Button variant="outline" onClick={() => { setSuccess(null); setSuccessPay(null); setPrintTarget('receipt'); setStep(1); form.reset(); setCollectNow(false); setPayAmount(''); setPayRef(''); setPayReceipt(''); setConcession(0); }}>
+              <Button variant="outline" onClick={() => { setSuccess(null); setSuccessPay(null); setPrintTarget('receipt'); setStep(1); form.reset(); setCollectNow(false); setPayAmount(''); setPayRef(''); setPayReceipt(''); setRecords([]); setDueDate(''); }}>
                 Add Another Admission
               </Button>
               <Button variant="outline" onClick={() => navigate(`/ledger/${success.sno}`)}>
@@ -684,6 +763,20 @@ export default function NewAdmission() {
                 <Label htmlFor="emergencyContact">Emergency Contact</Label>
                 <Input id="emergencyContact" {...form.register('emergencyContact')} placeholder="+92..." className={form.formState.errors.emergencyContact ? 'border-red-300' : ''} />
                 {form.formState.errors.emergencyContact && <p className="text-xs text-red-500 mt-1">{form.formState.errors.emergencyContact.message}</p>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="guardianName">Guardian / Fee Payer{guardianRequired ? ' *' : ''}</Label>
+                <Input id="guardianName" {...form.register('guardianName')} placeholder="Person who pays the fees, if not the student" className={guardianRequired && !(formData.guardianName ?? '').trim() ? 'border-red-300' : ''} />
+                {guardianRequired && !(formData.guardianName ?? '').trim() && <p className="text-xs text-red-500 mt-1">Required — the student is under 18 (§19)</p>}
+              </div>
+              <div>
+                <Label htmlFor="guardianPhone">Guardian Phone{guardianRequired ? ' *' : ''}</Label>
+                <Input id="guardianPhone" {...form.register('guardianPhone')} placeholder="+92..." className={guardianRequired && !(formData.guardianPhone ?? '').trim() ? 'border-red-300' : ''} />
+                {form.formState.errors.guardianPhone && <p className="text-xs text-red-500 mt-1">{form.formState.errors.guardianPhone.message}</p>}
+                {guardianRequired && !(formData.guardianPhone ?? '').trim() && <p className="text-xs text-red-500 mt-1">Required — the student is under 18 (§19)</p>}
               </div>
             </div>
 
@@ -950,15 +1043,24 @@ export default function NewAdmission() {
               ) : (
                 <>
                   <p className="text-xs text-slate-500 mb-3">From template “{feeTemplate.name}” v{feeTemplate.version}. This fee structure locks to this student's record and won't change if the institute updates fee templates later.</p>
-                  <FeeBreakdownTable
-                    lines={openingPlan.baseFeeBreakup}
-                    total={templateTotal}
-                    totalLabel={courseDef ? `${getTermLabel(courseDef.system, formData.semester as Semester)} charge` : 'Opening term charge'}
-                    concession={concession}
-                    onConcession={(v) => setConcession(Math.min(v, templateTotal))}
-                    recurring={recurringFee}
-                    net={totalFee}
+                  <FeePlanEditor
+                    key={templateKey}
+                    lines={plan?.opening.lines ?? []}
+                    templateTotal={templateTotal}
+                    totalConcession={totalConcession}
+                    netTotal={totalFee}
+                    warnings={plan?.opening.warnings ?? []}
+                    records={records}
+                    preview={plan?.terms ?? []}
+                    startTerm={startTerm}
+                    totalTerms={feeTemplate.totalTerms}
+                    termLabel={(term) => `${courseDef?.system === 'annual' ? 'Year' : 'Semester'} ${term}`}
+                    onAdd={(record) => setRecords((prev) => [...prev, record])}
+                    onRemove={(id) => setRecords((prev) => prev.filter((r) => r.id !== id))}
                   />
+                  <p className="text-xs text-slate-500 mt-3">
+                    Locked promotion fee (next billed term, same records): <strong className="tabular-nums">{formatPKR(recurringFee)}</strong>
+                  </p>
                 </>
               )}
             </CardContent>
@@ -968,6 +1070,32 @@ export default function NewAdmission() {
 
           {step === 4 && (
           <>
+          {/* Step 4: review the opening charge — due date is editable, never before admission */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Opening charge</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-slate-600">
+                Charge {formatPKR(templateTotal)} − concession {formatPKR(totalConcession)} = net <strong>{formatPKR(totalFee)}</strong>
+              </p>
+              <div>
+                <Label htmlFor="dueDate">Due date *</Label>
+                <Input
+                  id="dueDate"
+                  type="date"
+                  value={effectiveDueDate}
+                  min={admissionDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                  className={!dueDateOk ? 'border-red-300' : ''}
+                />
+                <p className="text-xs text-slate-400 mt-1">
+                  Default: {feeTemplate?.admissionDueDays ?? 14} days after admission (§24.1). A changed date is written to the audit trail.
+                </p>
+                {!dueDateOk && <p className="text-xs text-red-500 mt-1">Due date cannot be before the admission date (§24.1).</p>}
+              </div>
+            </CardContent>
+          </Card>
           {/* Step 4: optional payment at admission — receipt only if amount > 0 */}
           <Card>
             <CardHeader>
@@ -998,11 +1126,22 @@ export default function NewAdmission() {
                 </div>
                 <div>
                   <Label>Receipt No.</Label>
-                  <Input
-                    value={payReceipt}
-                    onChange={(e) => setPayReceipt(e.target.value)}
-                    placeholder="Auto from receipt book"
-                  />
+                  {bookSlot?.book.mode === 'PrePrinted' ? (
+                    <Input
+                      value={payReceipt}
+                      onChange={(e) => setPayReceipt(e.target.value)}
+                      placeholder={gate.nextLabel || 'Slip number'}
+                    />
+                  ) : (
+                    <div className="rounded-control border border-hairline-soft bg-panel-soft px-3 py-2 text-ui num text-ink">
+                      {receiptRef || 'No book'}
+                    </div>
+                  )}
+                  <p className="mt-1 text-micro text-ink-3">
+                    {bookSlot
+                      ? gate.problem ?? gate.warning ?? `${bookSlot.book.name} · next ${gate.nextLabel} (§25)`
+                      : 'No receipt book — an Admin adds one in Settings (§24).'}
+                  </p>
                 </div>
               </div>
               ) : null}
@@ -1062,6 +1201,7 @@ export default function NewAdmission() {
                 : !contactValid ? 'Contact number invalid'
                 : !emergencyValid ? 'Emergency contact invalid'
                 : !dobValid ? 'DOB invalid'
+                : guardianRequired && !guardianOk ? 'Guardian name and phone are required under 18'
                 : 'Fix errors above'}
             </span>
           )}
@@ -1073,7 +1213,7 @@ export default function NewAdmission() {
               Next: {step === 1 ? 'Academic' : step === 2 ? 'Fees' : 'Confirm'}
             </Button>
           ) : (
-            <Button type="submit" disabled={saving || totalFee <= 0}>
+            <Button type="submit" disabled={saving || templateTotal <= 0 || !dueDateOk}>
               {saving ? 'Saving...' : 'Confirm Admission'}
             </Button>
           )}

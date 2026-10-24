@@ -44,6 +44,11 @@ export default function EditStudent() {
     gender: (student?.gender ?? '') as '' | 'Male' | 'Female' | 'Other',
     domicile: student?.domicile ?? '',
     emergencyContact: student?.emergencyContact ?? '',
+    guardianName: student?.guardianName ?? '',
+    guardianPhone: student?.guardianPhone ?? '',
+    councilRegistrationNo: student?.councilRegistrationNo ?? '',
+    rollNo: student?.rollNo ?? '',
+    previousEducation: student?.previousEducation ?? '',
   });
   const [reason, setReason] = useState('');
   const [saved, setSaved] = useState(false);
@@ -79,15 +84,26 @@ export default function EditStudent() {
     (formData.dob || '') !== (student.dob ?? '') ||
     (formData.gender || '') !== (student.gender ?? '') ||
     formData.domicile !== (student.domicile ?? '') ||
-    formData.emergencyContact !== (student.emergencyContact ?? '');
+    formData.emergencyContact !== (student.emergencyContact ?? '') ||
+    formData.guardianName !== (student.guardianName ?? '') ||
+    formData.guardianPhone !== (student.guardianPhone ?? '') ||
+    formData.councilRegistrationNo !== (student.councilRegistrationNo ?? '') ||
+    formData.rollNo !== (student.rollNo ?? '') ||
+    formData.previousEducation !== (student.previousEducation ?? '');
 
   const normalizedCnicPreview = normalizeCNIC(formData.cnic);
   const cnicValid = normalizedCnicPreview === null || isValidCNIC(normalizedCnicPreview);
   const contactValid = isValidContact(formData.contact);
   const emergencyValid = isValidContact(formData.emergencyContact);
+  const guardianPhoneValid = isValidContact(formData.guardianPhone);
   const dobValid = !formData.dob || new Date(formData.dob) <= new Date();
+  // §25: changing the CNIC runs the same duplicate check as admission — another
+  // live record carrying this number blocks the save and points at that SNO.
+  const cnicTakenBy = normalizedCnicPreview !== null && isValidCNIC(normalizedCnicPreview)
+    ? students.find((s) => s.sno !== student.sno && !s.isTestRecord && s.cnic && s.cnic.replace(/\D/g, '') === normalizedCnicPreview.replace(/\D/g, ''))
+    : undefined;
   const nameFilled = formData.name.trim() !== '' && formData.fatherName.trim() !== '';
-  const canSave = isDirty && nameFilled && reason.trim() !== '' && cnicValid && contactValid && emergencyValid && dobValid;
+  const canSave = isDirty && nameFilled && reason.trim() !== '' && cnicValid && contactValid && emergencyValid && guardianPhoneValid && dobValid && !cnicTakenBy;
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -100,10 +116,11 @@ export default function EditStudent() {
   };
 
   const handleSave = () => {
-    if (!canSave) return;
+    if (!canSave || cnicTakenBy) return;
     const normalizedCnic = normalizeCNIC(formData.cnic);
     const normalizedContact = normalizeContact(formData.contact);
     const normalizedEmergency = normalizeContact(formData.emergencyContact);
+    const normalizedGuardianPhone = normalizeContact(formData.guardianPhone);
     // Build audit changes before patch
     const changes: { field: string; before: string; after: string }[] = [];
     if (formData.name.trim() !== student.name) changes.push({ field: 'Name', before: student.name, after: formData.name.trim() });
@@ -117,6 +134,11 @@ export default function EditStudent() {
     if ((formData.gender || '—') !== (student.gender ?? '—')) changes.push({ field: 'Gender', before: student.gender ?? '—', after: formData.gender || '—' });
     if (formData.domicile !== (student.domicile ?? '')) changes.push({ field: 'Domicile', before: student.domicile ?? '—', after: formData.domicile || '—' });
     if ((normalizedEmergency ?? '—') !== (student.emergencyContact ?? '—')) changes.push({ field: 'Emergency Contact', before: student.emergencyContact ?? '—', after: normalizedEmergency ?? '—' });
+    if ((formData.guardianName.trim() || null) !== (student.guardianName ?? null)) changes.push({ field: 'Guardian', before: student.guardianName ?? '—', after: formData.guardianName.trim() || '—' });
+    if ((normalizedGuardianPhone ?? '—') !== (student.guardianPhone ?? '—')) changes.push({ field: 'Guardian Phone', before: student.guardianPhone ?? '—', after: normalizedGuardianPhone ?? '—' });
+    if ((formData.councilRegistrationNo.trim() || null) !== (student.councilRegistrationNo ?? null)) changes.push({ field: 'Council Registration No', before: student.councilRegistrationNo ?? '—', after: formData.councilRegistrationNo.trim() || '—' });
+    if ((formData.rollNo.trim() || null) !== (student.rollNo ?? null)) changes.push({ field: 'Roll No', before: student.rollNo ?? '—', after: formData.rollNo.trim() || '—' });
+    if ((formData.previousEducation.trim() || null) !== (student.previousEducation ?? null)) changes.push({ field: 'Previous Education', before: student.previousEducation ?? '—', after: formData.previousEducation.trim() || '—' });
 
     updateStudent(student.sno, {
       name: formData.name.trim(),
@@ -130,6 +152,11 @@ export default function EditStudent() {
       gender: formData.gender || null,
       domicile: formData.domicile.trim() || null,
       emergencyContact: normalizedEmergency,
+      guardianName: formData.guardianName.trim() || null,
+      guardianPhone: normalizedGuardianPhone,
+      councilRegistrationNo: formData.councilRegistrationNo.trim() || null,
+      rollNo: formData.rollNo.trim() || null,
+      previousEducation: formData.previousEducation.trim() || null,
     });
     const userName = useAuthStore.getState().user?.name ?? 'Admin';
     useAuditStore.getState().addLog({
@@ -245,6 +272,11 @@ export default function EditStudent() {
               className={!cnicValid ? 'border-red-300' : ''}
             />
             {!cnicValid && <p className="text-xs text-red-500 mt-1">CNIC must be 13 digits (XXXXX-XXXXXXX-X)</p>}
+            {cnicTakenBy && (
+              <p className="text-xs text-red-500 mt-1">
+                This CNIC already belongs to SNO {cnicTakenBy.sno} — {cnicTakenBy.name}. Open that record instead (§25).
+              </p>
+            )}
           </div>
           <div>
             <Label htmlFor="address">Address</Label>
@@ -285,6 +317,31 @@ export default function EditStudent() {
               <Input id="emergencyContact" value={formData.emergencyContact} onChange={(e) => setFormData({ ...formData, emergencyContact: e.target.value })} placeholder="+92..." className={!emergencyValid ? 'border-red-300' : ''} />
               {!emergencyValid && <p className="text-xs text-red-500 mt-1">Invalid PK number</p>}
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="guardianName">Guardian Name</Label>
+              <Input id="guardianName" value={formData.guardianName} onChange={(e) => setFormData({ ...formData, guardianName: e.target.value })} placeholder="Person who pays the fees, if not the student" />
+            </div>
+            <div>
+              <Label htmlFor="guardianPhone">Guardian Phone</Label>
+              <Input id="guardianPhone" value={formData.guardianPhone} onChange={(e) => setFormData({ ...formData, guardianPhone: e.target.value })} placeholder="+92..." className={!guardianPhoneValid ? 'border-red-300' : ''} />
+              {!guardianPhoneValid && <p className="text-xs text-red-500 mt-1">Invalid PK number</p>}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="rollNo">Institute Roll No</Label>
+              <Input id="rollNo" value={formData.rollNo} onChange={(e) => setFormData({ ...formData, rollNo: e.target.value })} placeholder="e.g. BSN-2025-014" />
+            </div>
+            <div>
+              <Label htmlFor="councilRegistrationNo">Council Registration No</Label>
+              <Input id="councilRegistrationNo" value={formData.councilRegistrationNo} onChange={(e) => setFormData({ ...formData, councilRegistrationNo: e.target.value })} placeholder="Where one applies" />
+            </div>
+          </div>
+          <div>
+            <Label htmlFor="previousEducation">Previous Education</Label>
+            <Input id="previousEducation" value={formData.previousEducation} onChange={(e) => setFormData({ ...formData, previousEducation: e.target.value })} placeholder="e.g. FSc Pre-Medical — Swat Institute, 2024" />
           </div>
         </CardContent>
       </Card>

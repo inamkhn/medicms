@@ -238,17 +238,24 @@ export interface PostingStatus {
   struckOff: boolean;
   /** In their final term — promotion is over, but a certificate fee is not (§7.7). */
   completed: boolean;
+  /** §26.5 (students doc): away on leave — no fee charge or promotion while away. */
+  onLeave?: boolean;
 }
 
 /**
  * §7.6: for a struck-off student payments, refunds, adjustments and write-offs are
  * allowed, new fee charges, promotion and special charges are blocked.
  * §7.7: for a completed student payments and special charges are allowed, promotion
- * is not. Returns the sentence to show, or null when the posting may go ahead.
+ * is not. §26.5 of the students doc: an on-leave student takes no fee charge or
+ * promotion while away; payments stay allowed. Returns the sentence to show, or null
+ * when the posting may go ahead.
  */
 export function postingBlocker(type: LedgerEntryType, status: PostingStatus): string | null {
   if (status.struckOff && (type === 'FeeCharge' || type === 'SpecialCharge')) {
     return 'Blocked — the student is struck off, so no new charge may be posted (§7.6).';
+  }
+  if (status.onLeave && type === 'FeeCharge') {
+    return 'Blocked — the student is on leave; no fee charge or promotion posts while away (§26.5).';
   }
   if (status.completed && type === 'FeeCharge') {
     return 'Blocked — the student has completed the program; only special charges may be posted (§7.7).';

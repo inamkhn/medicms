@@ -12,7 +12,12 @@ import { MOCK_FEE_TEMPLATES, MOCK_STUDENTS } from '@/lib/mockData';
 import { legacyPlanFor } from '@/lib/fee/templateCompat';
 import { convertLegacyRows } from '@/lib/fee/templateSeed';
 import { findActiveFor } from '@/lib/fee/templateRules';
+import { nowISO } from '@/lib/txn';
+import { getNextSno } from '@/lib/sno';
 import type { Student } from '@/types';
+
+// Re-exported for existing importers (NewAdmission's preview, stores/index).
+export { getNextSno };
 
 // The templates the fee template store will seed from, converted the same way, so a
 // seeded student's locked figures are the very numbers the template screen shows.
@@ -40,25 +45,32 @@ function backfillLockedFee(s: Student): Student {
 
 export type NewStudentInput = Omit<Student, 'sno' | 'struckOff' | 'isTestRecord' | 'synced'>;
 
-export function getNextSno(students: Student[]): number {
-  return Math.max(0, ...students.map(s => s.sno)) + 1;
-}
-
 interface StudentState {
   students: Student[];
+  /** §27: highest SNO ever issued. Never lowered — not by strike-off, not by an import undo. */
+  snoFloor: number;
   addStudent: (input: NewStudentInput) => Student;
   updateStudent: (sno: number, patch: Partial<Student>) => void;
+  /** §23.7: undo an import removes exactly the students that import created. */
+  removeStudents: (snos: readonly number[]) => void;
   strikeOff: (sno: number, reason: string, details: string, date: string) => void;
   reverseStrikeOff: (sno: number) => void;
+  /** §26.5: finished the final term — leaves the active counts, ledger kept. */
+  markCompleted: (sno: number, date: string) => void;
+  /** §26.5: temporarily away — reason and expected return date are required. */
+  putOnLeave: (sno: number, reason: string, returnDate: string, date: string) => void;
+  /** §26.5: back to Active; the caller writes the reason to the audit trail. */
+  returnFromLeave: (sno: number) => void;
 }
 
 export const useStudentStore = create<StudentState>()(
   persist(
     (set, get) => ({
       students: MOCK_STUDENTS.map(backfillLockedFee),
+      snoFloor: 0,
 
       addStudent: (input) => {
-        const sno = getNextSno(get().students);
+        const sno = getNextSno(get().students, get().snoFloor ?? 0);
         const created: Student = {
           ...input,
           sno,
@@ -66,14 +78,21 @@ export const useStudentStore = create<StudentState>()(
           isTestRecord: false,
           synced: true,
         };
-        set((state) => ({ students: [...state.students, created] }));
+        set((state) => ({ students: [...state.students, created], snoFloor: sno }));
         return created;
       },
 
       updateStudent: (sno, patch) =>
         set((state) => ({
-          students: state.students.map((s) => (s.sno === sno ? { ...s, ...patch } : s)),
+          // The stamp separates "set up by the import" from "edited after it" (§23.7).
+          students: state.students.map((s) => (s.sno === sno ? { ...s, ...patch, updatedAt: nowISO() } : s)),
         })),
+
+      removeStudents: (snos) => {
+        // snoFloor is deliberately untouched: the removed numbers stay retired (§27).
+        const gone = new Set(snos);
+        set((state) => ({ students: state.students.filter((s) => !gone.has(s.sno)) }));
+      },
 
       strikeOff: (sno, reason, details, date) =>
         set((state) => ({
@@ -97,10 +116,35 @@ export const useStudentStore = create<StudentState>()(
               : s
           ),
         })),
+
+      markCompleted: (sno, date) =>
+        set((state) => ({
+          students: state.students.map((s) =>
+            s.sno === sno ? { ...s, completed: true, completedDate: date } : s
+          ),
+        })),
+
+      putOnLeave: (sno, reason, returnDate, date) =>
+        set((state) => ({
+          students: state.students.map((s) =>
+            s.sno === sno
+              ? { ...s, onLeave: true, leaveReason: reason, leaveReturnDate: returnDate, leaveDate: date }
+              : s
+          ),
+        })),
+
+      returnFromLeave: (sno) =>
+        set((state) => ({
+          students: state.students.map((s) =>
+            s.sno === sno
+              ? { ...s, onLeave: false, leaveReason: undefined, leaveReturnDate: undefined, leaveDate: undefined }
+              : s
+          ),
+        })),
     }),
     {
       name: 'medicms-students',
-      partialize: (s) => ({ students: s.students }),
+      partialize: (s) => ({ students: s.students, snoFloor: s.snoFloor }),
     }
   )
 );

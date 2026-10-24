@@ -7,8 +7,9 @@ import { cn } from '@/lib/utils';
 // Select — design system §10
 // Already the only correctly-built primitive (real Radix, real keyboard model).
 // Only the hardcoded palette came out: focus is the single base-layer outline,
-// and the popup sits at z-dropdown(30), which is above the sticky table header at
-// z-sticky(20), so a select opened over a table is never hidden by it.
+// and the popup sits at z-dropdown(65), above both the sticky table header at
+// z-sticky(20) and the dialog layer (z-modal 60) — a select opened inside a
+// dialog portals to <body>, so it must float over the panel, not behind the scrim.
 // ============================================
 
 // Re-exporting Radix's components as `const Select = SelectPrimitive.Root` makes
@@ -55,7 +56,7 @@ export const SelectContent = React.forwardRef<
       ref={ref}
       position={position}
       className={cn(
-        'relative z-dropdown min-w-[8rem] overflow-hidden rounded-control border border-hairline bg-panel shadow-raised',
+        'relative z-dropdown max-h-[var(--radix-select-content-available-height)] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-control border border-hairline bg-panel shadow-raised',
         className,
       )}
       {...props}

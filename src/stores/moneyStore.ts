@@ -19,8 +19,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { BANK_INFO } from '@/lib/constants';
-import type { DayClosing, MoneyAccount, MoneyEntry } from '@/lib/finance';
+import type { ChequeDeposit, DayClosing, MoneyAccount, MoneyEntry } from '@/lib/finance';
 import type { Chequebook, IssuedCheque } from '@/lib/finance';
+import type { MonthClosure, Reconciliation, StatementLine } from '@/lib/finance';
+import type { PettyCount } from '@/lib/finance';
 import {
   accountBalance,
   accountClosingProblems,
@@ -64,6 +66,19 @@ export interface MoneyPostOutcome {
   rejected: { id: string; problems: string[] }[];
 }
 
+/**
+ * The reconciled flag on an entry follows the statement lines that match it
+ * (§41/§42), so one action can never leave the two disagreeing.
+ */
+function reconciledFlags(entries: readonly MoneyEntry[], lines: readonly StatementLine[]): MoneyEntry[] {
+  const matched = new Set<string>();
+  for (const line of lines) {
+    if (line.status !== 'Matched') continue;
+    for (const id of line.matchedEntryIds ?? []) matched.add(id);
+  }
+  return entries.map((entry) => (entry.reconciled === matched.has(entry.id) ? entry : { ...entry, reconciled: matched.has(entry.id) }));
+}
+
 interface MoneyState {
   accounts: MoneyAccount[];
   entries: MoneyEntry[];
@@ -73,6 +88,11 @@ interface MoneyState {
    * when the reopen arrives, F7.)
    */
   closedDays: DayClosing[];
+  /**
+   * §48.2.3: every petty cash count, because an even count posts no entry and
+   * the month close would otherwise have nothing to read (§69 item 3).
+   */
+  pettyCounts: PettyCount[];
   /** `YYYY-MM` keys, in the order they were closed (§51). */
   closedMonths: string[];
   /** §31.1: the chequebooks, each a number range drawn on one bank account. */
@@ -82,6 +102,18 @@ interface MoneyState {
    * — only a cleared one has posted money out (§31.3 available balance).
    */
   issuedCheques: IssuedCheque[];
+  /** §40: the imported bank statement lines, never edited — matched or ignored. */
+  statementLines: StatementLine[];
+  /**
+   * §34/§58: the deposits that sent a held cheque to the bank. No money moves
+   * until it clears (§35); this only remembers the bank and the deposit date, so
+   * a Received cheque becomes Deposited. One deposit per held entry.
+   */
+  chequeDeposits: ChequeDeposit[];
+  /** §42: one finished reconciliation per account per month. */
+  reconciliations: Reconciliation[];
+  /** §48: the month records — Open, In review, Closed, and the report kept at closing. */
+  monthClosures: MonthClosure[];
   /** Returns the refusal sentences; empty means the account was added. */
   addAccount: (account: MoneyAccount) => string[];
   /**
@@ -113,6 +145,8 @@ interface MoneyState {
    * several slips; the numbers only ever grow.
    */
   markDaysDeposited: (dayKeys: readonly string[], slipNo: string) => void;
+  /** §10/§48.2.3: keep the count itself beside the books; an even count leaves no entry. */
+  savePettyCount: (count: PettyCount) => void;
   /**
    * §31.1: add a chequebook. Refused (returns sentences) when it draws on a
    * non-bank or Closed account, or its range overlaps another book on the same
@@ -128,6 +162,27 @@ interface MoneyState {
   markChequeCleared: (chequeId: string, clearedDate: string, clearedEntryId: string) => void;
   /** §31.2 / §79.16: cancel an uncleared cheque; the number stays spent. */
   cancelIssuedCheque: (chequeId: string, reason: string) => boolean;
+  /** §34: send a held cheque to the bank — records the bank and date, posts no
+   *  money. A second deposit of the same held cheque replaces nothing: the first wins. */
+  markChequeDeposited: (deposit: ChequeDeposit) => void;
+  /** The next `sl-<n>`; statement line ids never come back. */
+  nextStatementLineId: () => string;
+  /** §40: append the imported lines and return how many were kept. */
+  addStatementLines: (lines: readonly Omit<StatementLine, 'id'>[]) => number;
+  /** §41.2: confirm a suggestion — one line may match several entries. */
+  matchStatementLine: (lineId: string, entryIds: readonly string[]) => void;
+  /** §41.3: a line that does not belong is Ignored with its reason, never deleted. */
+  ignoreStatementLine: (lineId: string, reason: string) => void;
+  /** Take a line back to Unmatched so it can be matched again. */
+  unmatchStatementLine: (lineId: string) => void;
+  /** §42: save the finished reconciliation for its account and month. */
+  saveReconciliation: (record: Reconciliation) => void;
+  /** §42: an Admin reopens a reconciled period, with a reason, before a reversal. */
+  reopenReconciliation: (id: string, by: string, reason: string, at: string) => void;
+  /** §48: save the month's record; a Closed month joins `closedMonths` for the posting rules. */
+  saveMonthClosure: (closure: MonthClosure) => void;
+  /** §48.4: an Admin reopens a month with a reason; the lock lifts for that month only. */
+  reopenMonth: (month: string, by: string, reason: string, at: string) => void;
 }
 
 export const useMoneyStore = create<MoneyState>()(
@@ -136,9 +191,14 @@ export const useMoneyStore = create<MoneyState>()(
       accounts: SEED_ACCOUNTS,
       entries: SEED_ALL_ENTRIES,
       closedDays: [],
+      pettyCounts: [],
       closedMonths: [],
       chequebooks: [],
       issuedCheques: [],
+      statementLines: [],
+      reconciliations: [],
+      monthClosures: [],
+      chequeDeposits: [],
 
       nextAccountId: () => {
         let max = 0;
@@ -262,6 +322,14 @@ export const useMoneyStore = create<MoneyState>()(
         }));
       },
 
+      savePettyCount: (count) => {
+        set((s) => ({
+          pettyCounts: [...s.pettyCounts, count].sort((a, b) =>
+            a.date === b.date ? a.at.localeCompare(b.at) : a.date < b.date ? -1 : 1,
+          ),
+        }));
+      },
+
       addChequebook: (book) => {
         const state = get();
         const problems: string[] = [];
@@ -308,29 +376,160 @@ export const useMoneyStore = create<MoneyState>()(
         }));
         return true;
       },
+
+      markChequeDeposited: (deposit) => {
+        set((s) =>
+          s.chequeDeposits.some((d) => d.heldId === deposit.heldId)
+            ? s
+            : { chequeDeposits: [...s.chequeDeposits, deposit] },
+        );
+      },
+
+      nextStatementLineId: () => {
+        let max = 0;
+        for (const line of get().statementLines) {
+          const parsed = /^sl-(\d+)$/.exec(line.id);
+          if (parsed && Number(parsed[1]) > max) max = Number(parsed[1]);
+        }
+        return `sl-${max + 1}`;
+      },
+
+      addStatementLines: (lines) => {
+        if (lines.length === 0) return 0;
+        let max = 0;
+        for (const line of get().statementLines) {
+          const parsed = /^sl-(\d+)$/.exec(line.id);
+          if (parsed && Number(parsed[1]) > max) max = Number(parsed[1]);
+        }
+        const stamped = lines.map((line, index) => ({ ...line, id: `sl-${max + 1 + index}` }));
+        set((s) => ({ statementLines: [...s.statementLines, ...stamped] }));
+        return stamped.length;
+      },
+
+      matchStatementLine: (lineId, entryIds) => {
+        set((s) => {
+          const statementLines = s.statementLines.map((line) =>
+            line.id === lineId
+              ? { ...line, status: 'Matched' as const, matchedEntryIds: [...entryIds], ignoredReason: undefined }
+              : line,
+          );
+          return { statementLines, entries: reconciledFlags(s.entries, statementLines) };
+        });
+      },
+
+      ignoreStatementLine: (lineId, reason) => {
+        set((s) => {
+          const statementLines = s.statementLines.map((line) =>
+            line.id === lineId
+              ? { ...line, status: 'Ignored' as const, ignoredReason: reason, matchedEntryIds: undefined }
+              : line,
+          );
+          return { statementLines, entries: reconciledFlags(s.entries, statementLines) };
+        });
+      },
+
+      unmatchStatementLine: (lineId) => {
+        set((s) => {
+          const statementLines = s.statementLines.map((line) =>
+            line.id === lineId
+              ? { ...line, status: 'Unmatched' as const, matchedEntryIds: undefined, ignoredReason: undefined }
+              : line,
+          );
+          return { statementLines, entries: reconciledFlags(s.entries, statementLines) };
+        });
+      },
+
+      saveReconciliation: (record) => {
+        set((s) => {
+          const exists = s.reconciliations.some((r) => r.id === record.id);
+          const reconciliations = exists
+            ? s.reconciliations.map((r) => (r.id === record.id ? record : r))
+            : [...s.reconciliations, record];
+          return { reconciliations };
+        });
+      },
+
+      reopenReconciliation: (id, by, reason, at) => {
+        set((s) => ({
+          reconciliations: s.reconciliations.map((r) =>
+            r.id === id ? { ...r, reopenedBy: by, reopenedAt: at, reopenReason: reason } : r,
+          ),
+        }));
+      },
+
+      saveMonthClosure: (closure) => {
+        set((s) => {
+          const exists = s.monthClosures.some((c) => c.month === closure.month);
+          const monthClosures = exists
+            ? s.monthClosures.map((c) => (c.month === closure.month ? closure : c))
+            : [...s.monthClosures, closure].sort((a, b) => a.month.localeCompare(b.month));
+          // §48.3: the posting rules read `closedMonths`, so the lock is written here.
+          const closedMonths =
+            closure.state === 'Closed'
+              ? [...new Set([...s.closedMonths, closure.month])].sort()
+              : s.closedMonths.filter((month) => month !== closure.month);
+          return { monthClosures, closedMonths };
+        });
+      },
+
+      reopenMonth: (month, by, reason, at) => {
+        set((s) => ({
+          monthClosures: s.monthClosures.map((c) =>
+            c.month === month ? { ...c, state: 'In review' as const, reopenedBy: by, reopenedAt: at, reopenReason: reason } : c,
+          ),
+          closedMonths: s.closedMonths.filter((m) => m !== month),
+        }));
+      },
     }),
     {
       name: 'medicms-money',
-      version: 2,
+      version: 5,
       partialize: (state) => ({
         accounts: state.accounts,
         entries: state.entries,
         closedDays: state.closedDays,
+        pettyCounts: state.pettyCounts,
         closedMonths: state.closedMonths,
         chequebooks: state.chequebooks,
         issuedCheques: state.issuedCheques,
+        statementLines: state.statementLines,
+        reconciliations: state.reconciliations,
+        monthClosures: state.monthClosures,
+        chequeDeposits: state.chequeDeposits,
       }),
       // v1 stored the openings only. Add the §13 movement to a book that still
       // holds nothing but its openings; a book with real entries is untouched (§78.1).
+      // v3 adds the statement lines, the reconciliations and the month records (§40–§48).
+      // v4 adds the petty cash counts (§48.2.3), which no entry records when even.
       migrate: (persisted) => {
-        const stored = (persisted ?? {}) as Partial<Pick<MoneyState, 'accounts' | 'entries' | 'closedDays' | 'closedMonths' | 'chequebooks' | 'issuedCheques'>>;
+        const stored = (persisted ?? {}) as Partial<
+          Pick<
+            MoneyState,
+            | 'accounts'
+            | 'entries'
+            | 'closedDays'
+            | 'pettyCounts'
+            | 'closedMonths'
+            | 'chequebooks'
+            | 'issuedCheques'
+            | 'statementLines'
+            | 'reconciliations'
+            | 'monthClosures'
+            | 'chequeDeposits'
+          >
+        >;
         return {
           accounts: stored.accounts ?? SEED_ACCOUNTS,
           entries: withDemoMoneyEntries(stored.entries ?? SEED_ENTRIES),
           closedDays: stored.closedDays ?? [],
+          pettyCounts: stored.pettyCounts ?? [],
           closedMonths: stored.closedMonths ?? [],
           chequebooks: stored.chequebooks ?? [],
           issuedCheques: stored.issuedCheques ?? [],
+          statementLines: stored.statementLines ?? [],
+          reconciliations: stored.reconciliations ?? [],
+          monthClosures: stored.monthClosures ?? [],
+          chequeDeposits: stored.chequeDeposits ?? [],
         };
       },
     },

@@ -62,6 +62,7 @@ export default function PayOut() {
   const vendors = useBillsStore((s) => s.vendors);
   const vouchers = useBillsStore((s) => s.vouchers);
   const limits = useSettingsStore((s) => s.financeLimits);
+  const voucherPrefix = useSettingsStore((s) => s.voucherPrefix);
   const role = useAuthStore((s) => s.user?.role);
   const userName = useAuthStore((s) => s.user?.name ?? 'Admin');
 
@@ -150,7 +151,7 @@ export default function PayOut() {
     role: role ?? '',
     today: dayKey(), now: nowISO(), limits,
     maxBackDateDays: role === 'Accountant' ? limits.accountantBackDateDays : undefined,
-    series: { entryNo: nextMoneyEntryNo(entries), actionNo: nextActionNo(entries), voucherNo: nextVoucherNo(vouchers) },
+    series: { entryNo: nextMoneyEntryNo(entries), actionNo: nextActionNo(entries), voucherNo: nextVoucherNo(vouchers, voucherPrefix) },
   });
 
   const post = (approvedBy?: string) => {

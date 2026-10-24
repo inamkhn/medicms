@@ -21,13 +21,16 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Bill, BillPayment, CostCategory, PaymentVoucher, Vendor } from '@/lib/finance';
+import type { RecurringBill } from '@/lib/finance';
 import {
   DEFAULT_COST_CATEGORIES,
   DEMO_BILLS,
   DEMO_PAYMENTS,
+  DEMO_RECURRING,
   DEMO_VENDORS,
   DEMO_VOUCHERS,
   categoryProblems,
+  recurringProblems,
   vendorProblems,
 } from '@/lib/finance';
 
@@ -42,6 +45,8 @@ interface BillsState {
   payments: BillPayment[];
   /** §29: every payment voucher, voids kept and struck through, numbers never reused. */
   vouchers: PaymentVoucher[];
+  /** §28: the regular costs that raise a reminder a few days before their day. */
+  recurring: RecurringBill[];
 
   // Categories (§24 — an Admin edits the list).
   addCategory: (category: CostCategory) => string[];
@@ -72,10 +77,20 @@ interface BillsState {
    * is the screen's, posted through the money store in the same action.
    */
   voidVoucher: (no: string, reason: string) => boolean;
+
+  // Recurring bills (§28).
+  /** The next `rb-<n>`; a retired template keeps its id. */
+  nextRecurringId: () => string;
+  addRecurring: (template: RecurringBill) => string[];
+  updateRecurring: (id: string, patch: Partial<Omit<RecurringBill, 'id' | 'createdAt' | 'createdBy'>>) => string[];
+  /** §28: retiring a template keeps it on the list for history; it simply stops reminding. */
+  setRecurringActive: (id: string, active: boolean) => void;
+  /** §28: after the bill is saved, the month is marked so it is not reminded again. */
+  markRecurringUsed: (id: string, month: string) => void;
 }
 
 /** What this store actually keeps — the actions are rebuilt, not restored (§78). */
-type PersistedBills = Pick<BillsState, 'categories' | 'vendors' | 'bills' | 'payments' | 'vouchers'>;
+type PersistedBills = Pick<BillsState, 'categories' | 'vendors' | 'bills' | 'payments' | 'vouchers' | 'recurring'>;
 
 export const useBillsStore = create<BillsState>()(
   persist(
@@ -85,6 +100,7 @@ export const useBillsStore = create<BillsState>()(
       bills: DEMO_BILLS,
       payments: DEMO_PAYMENTS,
       vouchers: DEMO_VOUCHERS,
+      recurring: DEMO_RECURRING,
 
       addCategory: (category) => {
         const problems = categoryProblems(category, get().categories);
@@ -178,19 +194,61 @@ export const useBillsStore = create<BillsState>()(
         }));
         return true;
       },
+
+      nextRecurringId: () => {
+        let max = 0;
+        for (const template of get().recurring) {
+          const parsed = /^rb-(\d+)$/.exec(template.id);
+          if (parsed && Number(parsed[1]) > max) max = Number(parsed[1]);
+        }
+        return `rb-${max + 1}`;
+      },
+
+      addRecurring: (template) => {
+        const state = get();
+        const problems: string[] = [];
+        if (state.recurring.some((t) => t.id === template.id)) {
+          problems.push(`Recurring bill ${template.id} already exists — ids are never reused.`);
+        }
+        problems.push(...recurringProblems(template));
+        if (problems.length) return problems;
+        set((s) => ({ recurring: [...s.recurring, template] }));
+        return [];
+      },
+
+      updateRecurring: (id, patch) => {
+        const state = get();
+        const current = state.recurring.find((t) => t.id === id);
+        if (!current) return [`Recurring bill ${id} does not exist (§28).`];
+        const next: RecurringBill = { ...current, ...patch, id };
+        const problems = recurringProblems(next);
+        if (problems.length) return problems;
+        set((s) => ({ recurring: s.recurring.map((t) => (t.id === id ? next : t)) }));
+        return [];
+      },
+
+      setRecurringActive: (id, active) => {
+        set((s) => ({ recurring: s.recurring.map((t) => (t.id === id ? { ...t, active } : t)) }));
+      },
+
+      markRecurringUsed: (id, month) => {
+        set((s) => ({ recurring: s.recurring.map((t) => (t.id === id ? { ...t, lastUsedMonth: month } : t)) }));
+      },
     }),
     {
       name: 'medicms-bills',
-      version: 2,
+      version: 3,
       partialize: (state) => ({
         categories: state.categories,
         vendors: state.vendors,
         bills: state.bills,
         payments: state.payments,
         vouchers: state.vouchers,
+        recurring: state.recurring,
       }),
       // v1 stored the lists empty (§78). Fill back only what is still empty, so
       // a machine with real vendors, bills or vouchers is left alone.
+      // v3 adds the §28 recurring templates.
       migrate: (persisted) => {
         const stored = (persisted ?? {}) as Partial<PersistedBills>;
         const keep = <T>(saved: T[] | undefined, demo: T[]): T[] => (saved && saved.length ? saved : demo);
@@ -200,6 +258,7 @@ export const useBillsStore = create<BillsState>()(
           bills: keep(stored.bills, DEMO_BILLS),
           payments: keep(stored.payments, DEMO_PAYMENTS),
           vouchers: keep(stored.vouchers, DEMO_VOUCHERS),
+          recurring: keep(stored.recurring, DEMO_RECURRING),
         };
       },
     },

@@ -82,7 +82,9 @@ export function DailySummary({ metrics, institute, printedBy, role }: Props) {
           <tr className="border-b border-black/40"><td className="py-1">Struck off</td><td className="py-1 text-right">{m.struckOffCount}</td></tr>
           <tr className="border-b border-black/40"><td className="py-1">Total students</td><td className="py-1 text-right">{m.totalCount}</td></tr>
           <tr className="border-b border-black/40"><td className="py-1">Outstanding dues (active)</td><td className="py-1 text-right">{formatPKR(m.outstandingDues)}</td></tr>
+          <tr className="border-b border-black/40"><td className="py-1">Of which overdue</td><td className="py-1 text-right">{formatPKR(m.overdueDues)}</td></tr>
           <tr className="border-b border-black/40"><td className="py-1">Credit held</td><td className="py-1 text-right">{formatPKR(m.creditHeld)}</td></tr>
+          <tr className="border-b border-black/40"><td className="py-1">Struck-off dues</td><td className="py-1 text-right">{formatPKR(m.struckOffDues)}</td></tr>
           <tr className="border-b border-black/40"><td className="py-1">Collected this month</td><td className="py-1 text-right">{formatPKR(m.collectedThisMonth)}</td></tr>
           {m.bankBalance !== null && (
             <tr><td className="py-1">Bank balance</td><td className="py-1 text-right">{formatPKR(m.bankBalance)}</td></tr>

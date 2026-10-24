@@ -12,7 +12,7 @@ import type { ConcessionRecord, FeeComponent, PostedCharge, TemplateLine, TermSc
 import type { TermFeesResult } from './termFees.ts';
 import { computeTemplateTermFees, deriveTermsPerYear } from './termFees.ts';
 import { applyConcessions } from './concessions.ts';
-import { allocatePayment, applyCreditToCharge, releaseAllocation, unpaidOf } from './allocation.ts';
+import { allocatePayment, applyCreditToCharge, releaseAllocation, releasePreview, unpaidOf } from './allocation.ts';
 import { computeAgeing, daysBetween } from './ageing.ts';
 import type { NewTermFee } from './adjustments.ts';
 import { planChangeAdjustments } from './adjustments.ts';
@@ -295,6 +295,19 @@ describe('§28 fee engine test cases', () => {
     const restored: PostedCharge[] = releaseAllocation(charges, receipt);
     equal(restored[0].allocated, 0);
     equal(unpaidOf(restored[0]), 53_000);
+  });
+
+  it('case 16b - the void preview names each charge the receipt comes off', () => {
+    const charges: PostedCharge[] = [
+      { id: 'ayesha-t1', term: 1, label: 'Term 1 fee', amount: 53_000, dueDate: '2026-10-23', allocated: 30_000 },
+      { id: 'ayesha-t2', term: 2, label: 'Term 2 fee', amount: 38_000, dueDate: '2026-11-15', allocated: 5_000 },
+    ];
+    const receipt = [{ chargeId: 'ayesha-t1', amount: 25_000 }];
+    deepStrictEqual(releasePreview(charges, receipt), [
+      { chargeId: 'ayesha-t1', label: 'Term 1 fee', released: 25_000, unpaidBefore: 23_000, unpaidAfter: 48_000 },
+    ]);
+    // A charge the receipt never paid is not in the preview and keeps its figure.
+    equal(releasePreview(charges, receipt).some((row) => row.chargeId === 'ayesha-t2'), false);
   });
 
   it('case 17 - suggested refund on a cancelled admission', () => {

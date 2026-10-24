@@ -6,20 +6,18 @@
 // those numbers are now derived from components in lib/fee/templateCompat.
 // ============================================
 
-import { getSubCourseDef, SEMESTER_OPTIONS } from '@/lib/constants';
+import { getSubCourseDef, termIndexOf } from '@/lib/constants';
+// The 1-based term-number rule moved to constants.ts (alias-free, so node tests
+// can share it); re-exported here for every existing importer of this module.
+export { termIndexOf };
 import { nextBilledTerm, templateTotalOf } from '@/lib/fee/templateCompat';
 import { findActiveFor } from '@/lib/fee/templateRules';
 import type { FeeTemplate, ProgramCode, Semester, Student } from '@/types';
 
 /**
- * Term number (1-based) for a semester label. The engine works in term numbers
- * because a template's timing options are expressed against them (§5.3).
+ * Term number (1-based) for a semester label — see constants.ts; this module
+ * only keeps the promotion helpers that build on it.
  */
-export function termIndexOf(semester: Semester): number {
-  const index = SEMESTER_OPTIONS.indexOf(semester);
-  return index < 0 ? 1 : index + 1;
-}
-
 export function getNextTerm(program: ProgramCode, current: Semester): Semester | null {
   const { sub } = getSubCourseDef(program);
   const idx = sub.terms.indexOf(current);

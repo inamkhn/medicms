@@ -54,6 +54,19 @@ export function bucketFor(daysOverdue: number, unpaid: number): AgeingBucket {
   return 'over90';
 }
 
+/**
+ * §22.3 directory filter — "Overdue age: Any, 1 to 30 days, 31 to 60, 61 to 90,
+ * over 90 days". `any` matches every student holding something overdue; a range
+ * matches when the student's oldest unpaid past-due charge sits in that bucket.
+ */
+export type AgeRange = 'any' | Exclude<AgeingBucket, 'notYetDue'>;
+
+export function inAgeRange(daysOverdue: number, range: AgeRange): boolean {
+  if (daysOverdue <= 0) return false;
+  if (range === 'any') return true;
+  return bucketFor(daysOverdue, 1) === range;
+}
+
 /** Split a student's charges into the §24.2 ageing buckets. */
 export function computeAgeing(charges: readonly PostedCharge[], today: string): AgeingResult {
   const buckets: Record<AgeingBucket, number> = {

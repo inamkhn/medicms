@@ -34,7 +34,7 @@ export function getStudentsWithBalanceLive(
     return {
       ...student,
       computedBalance: balance,
-      badge: getStudentBadge(student.struckOff, balance),
+      badge: getStudentBadge(student.struckOff, balance, student.completed ?? false, student.onLeave ?? false),
     };
   });
 }

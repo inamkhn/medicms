@@ -169,14 +169,19 @@ export function nextVoucherId(vouchers: readonly PaymentVoucher[]): string {
   return `pv-${max + 1}`;
 }
 
-/** The `PV-` number, counted from the highest already issued and zero-padded to 4. */
-export function nextVoucherNo(vouchers: readonly PaymentVoucher[]): string {
+/**
+ * The voucher number, counted from the highest already issued with this prefix
+ * and zero-padded to 4. The prefix is the institute's (§77), `PV-` by default.
+ */
+export function nextVoucherNo(vouchers: readonly PaymentVoucher[], prefix = 'PV-'): string {
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^${escaped}(\\d+)$`);
   let max = 0;
   for (const v of vouchers) {
-    const parsed = /^PV-(\d+)$/.exec(v.no);
+    const parsed = pattern.exec(v.no);
     if (parsed && Number(parsed[1]) > max) max = Number(parsed[1]);
   }
-  return `PV-${String(max + 1).padStart(4, '0')}`;
+  return `${prefix}${String(max + 1).padStart(4, '0')}`;
 }
 
 /**
@@ -394,7 +399,11 @@ export function createPaymentVoucher(draft: PayOutDraft, ctx: PayOutContext): Pa
     amount: draft.amount,
     kind: 'BillPayment',
     payee: voucher.payee,
-    category: draft.category?.trim() || undefined,
+    // §17/§30: the mode the voucher paid by, kept for the money-flow report.
+    mode: draft.mode,
+    // §26: a bill payment carries the category of the first bill it covers, so
+    // the money-flow report can name the cost without a second lookup (§55.1).
+    category: draft.category?.trim() || ctx.bills.find((b) => b.id === applied[0]?.billId)?.categoryId,
     reference: draft.reference?.trim() || voucher.no,
     linkedDoc: voucher.no,
     actionId: actionId(actionNo),

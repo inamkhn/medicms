@@ -9,17 +9,27 @@
 import type {
   StudentWithBalance, LedgerEntry, BankTransaction, Expense,
 } from '@/types';
-import type { ReceiptBook } from '@/stores/receiptBookStore';
 import type { Batch, FeeTemplate } from '@/types';
-import type { Budget } from '@/stores/budgetStore';
-import { isToday, isThisMonth } from '@/lib/dates';
-import { SEMESTER_OPTIONS } from '@/lib/constants';
-import { getPaymentMode, isNonCash } from '@/lib/ledger';
-import { computeBankBalance, unlinkedWithdrawals } from '@/lib/bank';
-import { findActiveFor } from '@/lib/fee/templateRules';
+import type { BudgetLine } from '@/lib/finance';
+import { lowStockMessage } from './receipts/index.ts';
+import { isToday, isThisMonth } from './dates.ts';
+import { SEMESTER_OPTIONS } from './constants.ts';
+import { ageingByStudent, getPaymentMode, isNonCash } from './ledger/index.ts';
+import { computeBankBalance, unlinkedWithdrawals } from './bank.ts';
+import { findActiveFor } from './fee/templateRules.ts';
 
-/** Below this many receipts left, a book is flagged (§17). */
+/** Below this many receipts left, a book is flagged (§17, §24). */
 export const LOW_BOOK_THRESHOLD = 20;
+
+/**
+ * A receipt book as the dashboard needs it. `left` comes from the register
+ * (`@/lib/receipts`), so the dashboard cannot count numbers its own way.
+ */
+export interface ReceiptStock {
+  id: string;
+  name: string;
+  left: number;
+}
 
 export interface AttentionItem {
   id: string;
@@ -31,6 +41,20 @@ export interface AttentionItem {
   action: string;
 }
 
+/** One row of the defaulter list (§13): ranked by overdue rupees, with its age. */
+export interface DefaulterRow {
+  sno: number;
+  name: string;
+  batch: string;
+  semester: StudentWithBalance['semester'];
+  /** Total balance, for context. */
+  balance: number;
+  /** Overdue part of the balance — the ranking figure. */
+  overdue: number;
+  /** Days since the oldest unpaid past-due charge's due date. */
+  daysOverdue: number;
+}
+
 export interface DashboardMetrics {
   // Students column
   activeCount: number;
@@ -38,7 +62,9 @@ export interface DashboardMetrics {
   totalCount: number;
   // Fees column
   outstandingDues: number;   // Σ positive balance, active students only
+  overdueDues: number;       // §14: Σ of the past-due part of those dues
   creditHeld: number;        // Σ |negative balance|, active students only
+  struckOffDues: number;     // §14: Σ positive balance, struck-off students
   collectedThisMonth: number;
   // Today row
   collectedToday: number;
@@ -50,7 +76,7 @@ export interface DashboardMetrics {
   expensesThisMonth: number | null;
   budgetUsedPct: number | null;   // null when no budget is set for the month
   // Lists
-  topDefaulters: StudentWithBalance[];
+  topDefaulters: DefaulterRow[];
   todayReceipts: { receiptNo: string; name: string; amount: number; mode: string }[];
   // Needs attention (§17)
   attention: AttentionItem[];
@@ -66,12 +92,14 @@ export interface MetricsInput {
   seesMoney: boolean;
   /** Logged-in user's display name; matches LedgerEntry.createdBy. */
   userName: string;
+  /** The day overdue is measured against; supplied by the caller like the ageing core (§24). */
+  today: string;
   students: StudentWithBalance[];      // already test-record filtered
   ledger: LedgerEntry[];
   bank: BankTransaction[];
   expenses: Expense[];
-  budgets: Budget[];
-  books: ReceiptBook[];
+  budgets: BudgetLine[];
+  books: ReceiptStock[];
   batches: Batch[];
   /** The template list; a batch counts as covered only when an Active template matches it (§7.1, §7.3). */
   templates: readonly FeeTemplate[];
@@ -79,11 +107,13 @@ export interface MetricsInput {
 
 export function computeDashboardMetrics(input: MetricsInput): DashboardMetrics {
   const {
-    seesOwnOnly, seesMoney, userName, students, ledger, bank, expenses, budgets,
+    seesOwnOnly, seesMoney, userName, today, students, ledger, bank, expenses, budgets,
     books, batches, templates,
   } = input;
 
-  const isActive = (s: StudentWithBalance) => !s.struckOff;
+  // §26.5: struck-off, completed and on-leave students all sit outside the
+  // active counts; their ledgers stay and are still payable.
+  const isActive = (s: StudentWithBalance) => !s.struckOff && !s.completed && !s.onLeave;
   const activeStudents = students.filter(isActive);
 
   const activeCount = activeStudents.length;
@@ -96,6 +126,17 @@ export function computeDashboardMetrics(input: MetricsInput): DashboardMetrics {
   const creditHeld = activeStudents
     .filter((s) => s.computedBalance < 0)
     .reduce((sum, s) => sum + Math.abs(s.computedBalance), 0);
+
+  // §14: overdue is the past-due part of the dues, from the same ageing pass the
+  // directory and the ledger print — the tile and the Overdue tab cannot disagree.
+  const ageing = ageingByStudent(ledger, today);
+  const overdueOf = (sno: number) => ageing.get(sno)?.overdue ?? 0;
+  const overdueDues = activeStudents.reduce((sum, s) => sum + overdueOf(s.sno), 0);
+
+  // §14: struck-off students can still owe money; it is reported, not hidden.
+  const struckOffDues = students
+    .filter((s) => s.struckOff && s.computedBalance > 0)
+    .reduce((sum, s) => sum + s.computedBalance, 0);
 
   // Payments only; concessions are not "collected" (§14). One amount per entry (§6),
   // so nothing here adds columns together the way the old row did.
@@ -125,17 +166,29 @@ export function computeDashboardMetrics(input: MetricsInput): DashboardMetrics {
     ? expenses.filter((e) => isThisMonth(e.date)).reduce((sum, e) => sum + e.amount, 0)
     : null;
   const monthlyBudget = seesMoney
-    ? budgets.filter((b) => isThisMonth(`${b.month}-01`)).reduce((sum, b) => sum + b.amount, 0)
+    ? budgets.filter((b) => b.month === today.slice(0, 7)).reduce((sum, b) => sum + b.amount, 0)
     : 0;
   const budgetUsedPct =
     seesMoney && monthlyBudget > 0 && expensesThisMonth !== null
       ? Math.round((expensesThisMonth / monthlyBudget) * 100)
       : null;
 
-  const topDefaulters = activeStudents
-    .filter((s) => s.computedBalance > 0)
-    .sort((a, b) => b.computedBalance - a.computedBalance)
-    .slice(0, 5);
+  // §13: the list ranks by overdue rupees — not total balance — and carries the
+  // days overdue of the oldest unpaid charge. Ties break on the larger balance.
+  const topDefaulters: DefaulterRow[] = activeStudents
+    .map((s) => ({ s, overdue: overdueOf(s.sno), daysOverdue: ageing.get(s.sno)?.oldestDays ?? 0 }))
+    .filter((row) => row.overdue > 0)
+    .sort((a, b) => b.overdue - a.overdue || b.s.computedBalance - a.s.computedBalance)
+    .slice(0, 5)
+    .map(({ s, overdue, daysOverdue }) => ({
+      sno: s.sno,
+      name: s.name,
+      batch: s.batch,
+      semester: s.semester,
+      balance: s.computedBalance,
+      overdue,
+      daysOverdue,
+    }));
 
   // ---- Needs attention (§17): each has a count and links to the page that fixes it ----
   const attention: AttentionItem[] = [];
@@ -151,17 +204,15 @@ export function computeDashboardMetrics(input: MetricsInput): DashboardMetrics {
     });
   }
 
-  for (const b of books.filter((x) => x.isActive)) {
-    const left = Math.max(0, b.end - b.current + 1);
-    if (left < LOW_BOOK_THRESHOLD) {
-      attention.push({
-        id: `book-${b.id}`,
-        count: left,
-        label: left === 0 ? `${b.bookNo} is used up` : `${b.bookNo} has ${left} receipt${left === 1 ? '' : 's'} left`,
-        href: '/settings',
-        action: left === 0 ? 'Add book' : 'Open',
-      });
-    }
+  for (const book of books) {
+    if (book.left >= LOW_BOOK_THRESHOLD) continue;
+    attention.push({
+      id: `book-${book.id}`,
+      count: book.left,
+      label: lowStockMessage(book.name, book.left, LOW_BOOK_THRESHOLD) ?? `${book.name} is used up`,
+      href: '/settings/receipt-books',
+      action: book.left === 0 ? 'Add book' : 'Open',
+    });
   }
 
   // Active students with no fee charge for their current term (§5: an entry carries a
@@ -185,12 +236,12 @@ export function computeDashboardMetrics(input: MetricsInput): DashboardMetrics {
     });
   }
 
-  const struckOffDues = students.filter((s) => s.struckOff && s.computedBalance > 0).length;
-  if (struckOffDues > 0) {
+  const struckOffDuesCount = students.filter((s) => s.struckOff && s.computedBalance > 0).length;
+  if (struckOffDuesCount > 0) {
     attention.push({
       id: 'struck-dues',
-      count: struckOffDues,
-      label: struckOffDues === 1 ? 'struck-off student still has dues' : 'struck-off students still have dues',
+      count: struckOffDuesCount,
+      label: struckOffDuesCount === 1 ? 'struck-off student still has dues' : 'struck-off students still have dues',
       href: '/students?status=struck_off',
       action: 'View',
     });
@@ -216,7 +267,7 @@ export function computeDashboardMetrics(input: MetricsInput): DashboardMetrics {
 
   return {
     activeCount, struckOffCount, totalCount,
-    outstandingDues, creditHeld, collectedThisMonth,
+    outstandingDues, overdueDues, struckOffDues, creditHeld, collectedThisMonth,
     collectedToday, receiptsToday: todayPayments.length, cashToday, bankToday,
     bankBalance, expensesThisMonth, budgetUsedPct,
     topDefaulters, todayReceipts, attention,

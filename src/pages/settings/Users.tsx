@@ -66,7 +66,7 @@ export default function Users() {
   const [error, setError] = useState('');
 
   const actor = session?.name ?? 'system';
-  const bookLabel = (id: string | null) => books.find((b) => b.id === id)?.bookNo ?? '—';
+  const bookLabel = (id: string | null) => books.find((b) => b.id === id)?.name ?? '—';
 
   const activeAdmins = useMemo(() => users.filter((u) => u.role === 'Admin' && u.status === 'Active').length, [users]);
 
@@ -283,7 +283,7 @@ export default function Users() {
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value={NONE_BOOK}>None</SelectItem>
-                        {books.map((b) => <SelectItem key={b.id} value={b.id}>{b.bookNo}</SelectItem>)}
+                        {books.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>

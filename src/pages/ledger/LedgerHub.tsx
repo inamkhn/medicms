@@ -5,15 +5,16 @@
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, BookOpen, SearchX } from 'lucide-react';
+import { Search, BookOpen, SearchX, CalendarRange, ShieldCheck } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { useStudentStore, useSettingsStore, useLedgerStore } from '@/stores';
+import { useStudentStore, useSettingsStore, useLedgerStore, useAuthStore } from '@/stores';
 import { getStudentsWithBalanceLive } from '@/lib/balance';
+import { can } from '@/lib/permissions';
 import { formatBalanceDisplay } from '@/lib/utils';
 import type { StudentBadgeType } from '@/types';
 
@@ -25,6 +26,8 @@ function StatusBadge({ badge, balance }: { badge: StudentBadgeType; balance: num
     struck_off: { label: 'Struck Off', className: 'bg-red-50 text-red-600 border border-red-100' },
     struck_off_dues: { label: `Struck Off + PKR ${balance.toLocaleString()}`, className: 'bg-red-50 text-red-600 border border-red-100' },
     struck_off_credit: { label: 'Struck Off + Credit', className: 'bg-red-50 text-red-600 border border-red-100' },
+    completed: { label: 'Completed', className: 'bg-emerald-50 text-emerald-600 border border-emerald-100' },
+    on_leave: { label: 'On leave', className: 'bg-slate-50 text-slate-600 border border-slate-100' },
   };
   const { label, className } = config[badge];
   return <Badge className={className}>{label}</Badge>;
@@ -32,6 +35,7 @@ function StatusBadge({ badge, balance }: { badge: StudentBadgeType; balance: num
 
 export default function LedgerHub() {
   const navigate = useNavigate();
+  const role = useAuthStore((s) => s.user?.role);
   const storeStudents = useStudentStore((s) => s.students);
   const showTestRecords = useSettingsStore((s) => s.showTestRecords);
   const ledgerEntries = useLedgerStore((s) => s.entries);
@@ -56,6 +60,20 @@ export default function LedgerHub() {
         <div className="flex items-center gap-3">
           <h1 className="text-[16px] font-bold text-slate-900 tracking-tight">Fee Ledger</h1>
           <span className="text-[11px] text-slate-500">{filtered.length} students</span>
+        </div>
+        {/* §9.2/§60 and §7.3: the day's register and the Admin-only ledger check hang
+            off the ledger, so neither is a screen with no way in. */}
+        <div className="flex items-center gap-1.5">
+          {can(role, 'daybook.view') && (
+            <Button size="sm" variant="outline" className="h-7 text-meta" onClick={() => navigate('/day-book')}>
+              <CalendarRange size={12} className="mr-1.5" /> Day book
+            </Button>
+          )}
+          {can(role, 'ledger.check') && (
+            <Button size="sm" variant="outline" className="h-7 text-meta" onClick={() => navigate('/ledger/check')}>
+              <ShieldCheck size={12} className="mr-1.5" /> Ledger check
+            </Button>
+          )}
         </div>
       </div>
 

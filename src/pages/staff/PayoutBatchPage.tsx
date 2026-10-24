@@ -159,7 +159,7 @@ function ExecuteDialog({
             </div>
           </div>
           {isCash && (
-            <div className="space-y-2 rounded-control border border-border bg-surface-muted p-3">
+            <div className="space-y-2 rounded-control border border-hairline bg-surface p-3">
               <p className="text-meta text-ink-muted">
                 Available {formatPKR(available)} · Expected balance after {formatPKR(expectedAfter)} (§57.1)
               </p>

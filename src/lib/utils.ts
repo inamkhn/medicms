@@ -108,12 +108,20 @@ export function computeBalanceState(balance: number): BalanceState {
   return { type: 'credit', amount: Math.abs(balance) };
 }
 
-export function getStudentBadge(struckOff: boolean, balance: number): StudentBadgeType {
+export function getStudentBadge(
+  struckOff: boolean,
+  balance: number,
+  completed = false,
+  onLeave = false,
+): StudentBadgeType {
+  // §26.5: a lifecycle state outranks the money state on the badge.
   if (struckOff) {
     if (balance > 0) return 'struck_off_dues';
     if (balance < 0) return 'struck_off_credit';
     return 'struck_off';
   }
+  if (completed) return 'completed';
+  if (onLeave) return 'on_leave';
   if (balance > 0) return 'dues';
   if (balance < 0) return 'credit';
   return 'active';

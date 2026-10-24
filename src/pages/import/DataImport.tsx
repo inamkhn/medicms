@@ -19,26 +19,26 @@ import { Badge } from '@/components/ui/badge';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { useStudentStore, useLedgerStore, useAcademicStore, useAuditStore, useAuthStore, useFeeTemplateStore } from '@/stores';
+import { useStudentStore, useLedgerStore, useAcademicStore, useAuditStore, useAuthStore, useFeeTemplateStore, useImportStore } from '@/stores';
 import type { NewStudentInput } from '@/stores/studentStore';
-import { normalizeCNIC, normalizeContact, isValidCNIC, isValidContact } from '@/lib/utils';
+import { normalizeCNIC, normalizeContact, isValidCNIC, isValidContact, formatDateTime } from '@/lib/utils';
 import { dayKey } from '@/lib/dates';
 import { nowISO } from '@/lib/txn';
 import { termIndexOf } from '@/lib/promotion';
 import { legacyPlanFor } from '@/lib/fee/templateCompat';
 import { findActiveFor } from '@/lib/fee/templateRules';
 import { entryId } from '@/lib/ledger';
+import { undoBlocker } from '@/lib/importUndo';
+// §23.1: one layout for both sides — the export writes exactly what this page reads.
+import { IMPORT_COLUMNS, splitCsvLine } from '@/lib/studentExport';
+import { can } from '@/lib/permissions';
 import { COURSES } from '@/lib/constants';
 import type {
-  CourseCode, ProgramCode, Semester, FeeTemplate, LedgerEntry,
+  CourseCode, ProgramCode, Semester, FeeTemplate, LedgerEntry, ImportBatchRecord,
 } from '@/types';
 
-// --- Column model (§23.3) ---
-const COLUMNS = [
-  'name', 'father_name', 'cnic', 'phone', 'address', 'date_of_birth', 'gender',
-  'domicile', 'emergency_contact', 'registration_date', 'course', 'program',
-  'batch', 'session', 'current_term', 'opening_balance', 'fee_template',
-] as const;
+// --- Column model (§23.3) — the export writes the same layout (§23.1) ---
+const COLUMNS = IMPORT_COLUMNS;
 type Column = (typeof COLUMNS)[number];
 
 const ALIASES: Record<Column, string[]> = {
@@ -51,6 +51,10 @@ const ALIASES: Record<Column, string[]> = {
   gender: ['gender'],
   domicile: ['domicile'],
   emergency_contact: ['emergency_contact', 'emergencycontact', 'emergency contact'],
+  guardian_name: ['guardian_name', 'guardianname', 'guardian name', 'guardian'],
+  guardian_phone: ['guardian_phone', 'guardianphone', 'guardian phone', 'guardian mobile'],
+  council_registration_no: ['council_registration_no', 'councilregistrationno', 'council registration no', 'council registration', 'council no'],
+  roll_no: ['roll_no', 'rollno', 'roll no', 'roll number', 'roll'],
   registration_date: ['registration_date', 'regdate', 'reg date', 'registration'],
   course: ['course'],
   program: ['program', 'sub_course', 'sub-course', 'subcourse'],
@@ -92,20 +96,8 @@ const STATUS_BADGE: Record<RowStatus, { label: string; variant: 'cleared' | 'sec
   error: { label: 'Error', variant: 'danger' },
 };
 
-// --- CSV parsing (quoted fields + "" escaping) ---
-function splitCsvLine(line: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  let inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '"') {
-      if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else inQ = !inQ;
-    } else if (c === ',' && !inQ) { out.push(cur); cur = ''; } else cur += c;
-  }
-  out.push(cur);
-  return out.map((s) => s.trim());
-}
+// --- CSV parsing: quoted fields + "" escaping; the reader lives with the writer
+// in lib/studentExport so the round-trip is pinned by tests (§23.1). ---
 
 // --- Placement resolution ---
 function resolveCourse(raw: string): CourseCode | null {
@@ -174,8 +166,20 @@ export default function DataImport() {
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
   const [summary, setSummary] = useState<{ imported: number; skipped: number; failed: number } | null>(null);
+  // §23.2 stage 5: the reason typed for a Create-anyway row, written to the audit
+  // trail with the admission. §23.7: the batch this import recorded, and its undo.
+  const [reasons, setReasons] = useState<Record<number, string>>({});
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [undone, setUndone] = useState<ImportBatchRecord | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [historyNote, setHistoryNote] = useState<string | null>(null);
 
   const students = useStudentStore((s) => s.students);
+  const entries = useLedgerStore((s) => s.entries);
+  const batches = useImportStore((s) => s.batches);
+  const role = useAuthStore((s) => s.user?.role);
+  // §23.7: "An Admin can undo an import" — the permission table holds the rule.
+  const canUndo = can(role, 'data.importUndo');
   const academic = useAcademicStore();
 
   // --- Validation: check every row, save nothing (§23.5) ---
@@ -205,6 +209,8 @@ export default function DataImport() {
       if (cnic && !isValidCNIC(cnic)) errs.push('Invalid CNIC (must be 13 digits)');
       const phone = get('phone');
       if (phone && !isValidContact(phone)) errs.push('Phone number is not valid');
+      const guardianPhone = get('guardian_phone');
+      if (guardianPhone && !isValidContact(guardianPhone)) errs.push('Guardian phone number is not valid');
 
       // Dates
       if (get('date_of_birth') && (Number.isNaN(new Date(get('date_of_birth')).getTime()) || isFuture(get('date_of_birth')))) {
@@ -264,6 +270,11 @@ export default function DataImport() {
     });
 
     setRows(out);
+    // A fresh file invalidates the previous run's reasons and undo panel.
+    setReasons({});
+    setBatchId(null);
+    setUndone(null);
+    setConfirmId(null);
     setStep(1);
   };
 
@@ -286,12 +297,14 @@ export default function DataImport() {
     duplicate: rows.filter((r) => r.status === 'duplicate').length,
   };
   const duplicates = rows.filter((r) => r.status === 'duplicate');
+  // §23.2 stage 5: "Create anyway (with a reason)" — no reason, no import.
+  const missingCreateReasons = duplicates.some((r) => r.resolution === 'create' && !(reasons[r.line] ?? '').trim());
 
   // --- Download template (§23.2 step 1) ---
   const downloadTemplate = () => {
     const sample = [
-      'Maryam Iqbal,Iqbal Hussain,35202-1111111-1,03001234567,,2006-05-01,Female,Swat,,2025-09-01,BS Nursing,BSN,Fall,2025,3,18000,BSN 2025',
-      'Sana Malik,Malik Hussain,35202-4444444-6,03211234567,,2007-01-01,Female,Mingora,,2025-09-01,Paramedics,Radiology,Fall,2025,2,0,',
+      'Maryam Iqbal,Iqbal Hussain,35202-1111111-1,03001234567,,2006-05-01,Female,Swat,,Iqbal Hussain,03001234567,,,2025-09-01,BS Nursing,BSN,Fall,2025,3,18000,BSN 2025',
+      'Sana Malik,Malik Hussain,35202-4444444-6,03211234567,,2007-01-01,Female,Mingora,,,,,,2025-09-01,Paramedics,Radiology,Fall,2025,2,0,',
     ];
     const csv = [COLUMNS.join(','), ...sample].join('\n');
     downloadCsv('students-import-template.csv', csv);
@@ -306,12 +319,13 @@ export default function DataImport() {
   };
 
   // --- Import (only Ready/Warning + resolved duplicates) (§23.2 step 6) ---
-  const postOpeningBalance = (sno: number, regDate: string, term: Semester, amount: number) => {
-    if (!amount) return;
+  const postOpeningBalance = (sno: number, regDate: string, term: Semester, amount: number): string | null => {
+    if (!amount) return null;
     const entryNo = useLedgerStore.getState().nextEntryNo(sno);
     // A migrated opening figure is an OpeningBalance entry, not a Demand/Pay row (§6):
-    // it is neither a fresh charge nor money through the till, so it carries the term it
-    // arrived in but no due date and no receipt.
+    // it is neither a fresh charge nor money through the till, so it carries no
+    // receipt. §23.4 gives it an explicit due date — the registration date it was
+    // posted on — so it shows as Overdue once that date passes (§24.1 ageing).
     const entry: LedgerEntry = {
       id: entryId(sno, entryNo),
       studentSno: sno,
@@ -321,11 +335,13 @@ export default function DataImport() {
       amount: Math.abs(amount),
       description: 'Opening balance carried in at import',
       term: termIndexOf(term),
+      dueDate: regDate,
       createdBy: userName,
       createdAt: nowISO(),
       balanceAfter: 0,
     };
     useLedgerStore.getState().postEntries([entry], dayKey());
+    return entry.id;
   };
 
   const runImport = () => {
@@ -334,6 +350,9 @@ export default function DataImport() {
     const addLog = useAuditStore.getState().addLog;
     const templates = useFeeTemplateStore.getState().templates;
     let imported = 0; let skipped = 0; let failed = 0;
+    // §23.7: remember exactly what this import created so it can be undone.
+    const createdSnos: number[] = [];
+    const postedEntryIds: string[] = [];
 
     for (const r of rows) {
       if (r.status === 'error') { failed++; continue; }
@@ -349,6 +368,10 @@ export default function DataImport() {
         gender: asGender(r.get('gender')),
         domicile: r.get('domicile') || null,
         emergencyContact: normalizeContact(r.get('emergency_contact')) || null,
+        guardianName: r.get('guardian_name') || null,
+        guardianPhone: normalizeContact(r.get('guardian_phone')) || null,
+        councilRegistrationNo: r.get('council_registration_no') || null,
+        rollNo: r.get('roll_no') || null,
       };
 
       if (r.status === 'duplicate' && r.resolution === 'update' && r.dupSno) {
@@ -382,13 +405,71 @@ export default function DataImport() {
       const created = addStudent(input);
 
       const ob = Number(r.get('opening_balance')) || 0;
-      addLog({ user: userName, action: 'New Admission', studentSno: created.sno, details: `Bulk import — ${created.name} · ${program} · ${r.get('batch')}` });
-      postOpeningBalance(created.sno, r.get('registration_date') || dayKey(), term, ob);
+      // §23.2 stage 5: a Create-anyway row was a duplicate — the reason is the
+      // only thing that explains the second CNIC later, so it goes in the log.
+      const createAnyway = r.status === 'duplicate' && r.resolution === 'create';
+      const reason = (reasons[r.line] ?? '').trim();
+      addLog({
+        user: userName,
+        action: 'New Admission',
+        studentSno: created.sno,
+        details: `Bulk import — ${created.name} · ${program} · ${r.get('batch')}`
+          + (createAnyway ? ` · Create anyway over SNO ${r.dupSno} — Reason: ${reason}` : ''),
+      });
+      const obEntryId = postOpeningBalance(created.sno, r.get('registration_date') || dayKey(), term, ob);
+      if (obEntryId) postedEntryIds.push(obEntryId);
+      createdSnos.push(created.sno);
       imported++;
     }
 
+    // §23.7: one batch record per import, persisted so the history can offer undo.
+    let newBatchId: string | null = null;
+    if (createdSnos.length > 0) {
+      const batch: ImportBatchRecord = {
+        id: `imp-${Date.now()}`,
+        at: nowISO(),
+        date: dayKey(),
+        user: userName,
+        snos: createdSnos,
+        entryIds: postedEntryIds,
+      };
+      useImportStore.getState().addBatch(batch);
+      newBatchId = batch.id;
+      addLog({
+        user: userName,
+        action: 'Data Import',
+        details: `Imported ${createdSnos.length} student${createdSnos.length === 1 ? '' : 's'} from CSV — batch ${batch.id}`
+          + (postedEntryIds.length ? `, ${postedEntryIds.length} opening balance entr${postedEntryIds.length === 1 ? 'y' : 'ies'}` : ''),
+      });
+    }
+    setBatchId(newBatchId);
+    setUndone(null);
+    setConfirmId(null);
     setSummary({ imported, skipped, failed });
     setStep(3);
+  };
+
+  // §23.7: undo removes exactly what one import created and writes the undo to
+  // the audit trail. The batch record is dropped so the same undo cannot run twice.
+  const performUndo = (batch: ImportBatchRecord) => {
+    useLedgerStore.getState().removeEntries(batch.entryIds);
+    useStudentStore.getState().removeStudents(batch.snos);
+    useAuditStore.getState().addLog({
+      user: userName,
+      action: 'Import Undo',
+      details: `Undid import ${batch.id} (${batch.date}) — removed ${batch.snos.length} student${batch.snos.length === 1 ? '' : 's'}`
+        + ` and ${batch.entryIds.length} opening balance entr${batch.entryIds.length === 1 ? 'y' : 'ies'}`,
+    });
+    useImportStore.getState().dropBatch(batch.id);
+    setConfirmId(null);
+    if (batchId === batch.id) {
+      setUndone(batch);
+      setBatchId(null);
+    } else {
+      setHistoryNote(
+        `Import of ${batch.date} undone — ${batch.snos.length} student${batch.snos.length === 1 ? '' : 's'} and their opening balances removed. The import and the undo both stay in the audit trail.`,
+      );
+    }
   };
 
   const downloadErrorReport = () => {
@@ -455,6 +536,50 @@ export default function DataImport() {
         </Card>
       )}
 
+      {/* STEP 0b — Import history with undo (§23.7), Admin only */}
+      {step === 0 && canUndo && batches.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Recent imports</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-body text-ink-muted">
+              An import can be undone while none of its students has had a payment, fee charge, edit
+              or other activity since (§23.7). Both the import and the undo stay in the audit trail.
+            </p>
+            {historyNote && (
+              <div className="rounded-card border border-hairline bg-panel p-3 text-body text-ink-secondary">{historyNote}</div>
+            )}
+            <div className="space-y-2">
+              {[...batches].reverse().slice(0, 5).map((b) => {
+                const blocker = undoBlocker(b, students, entries);
+                return (
+                  <div key={b.id} className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline p-3">
+                    <div>
+                      <div className="text-body font-medium text-ink">{formatDateTime(b.at)}</div>
+                      <div className="text-meta text-ink-muted tabular-nums">
+                        {b.snos.length} student{b.snos.length === 1 ? '' : 's'} · {b.user} · {b.id}
+                      </div>
+                    </div>
+                    {blocker ? (
+                      <span className="text-meta text-ink-muted">{blocker}</span>
+                    ) : confirmId === b.id ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-meta text-danger">
+                          Remove {b.snos.length} student{b.snos.length === 1 ? '' : 's'} and their opening balances?
+                        </span>
+                        <Button variant="outline" size="sm" onClick={() => setConfirmId(null)}>Keep</Button>
+                        <Button variant="destructive" size="sm" onClick={() => performUndo(b)}>Undo import</Button>
+                      </div>
+                    ) : (
+                      <Button variant="outline" size="sm" onClick={() => setConfirmId(b.id)}>Undo import</Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* STEP 1 — Review validated rows */}
       {step === 1 && (
         <>
@@ -506,7 +631,7 @@ export default function DataImport() {
           </Card>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => navigate('/students')}>Cancel</Button>
-            <Button disabled={rows.length === 0} onClick={() => setStep(counts.duplicate > 0 ? 2 : 3)}>
+            <Button disabled={rows.length === 0} onClick={() => (counts.duplicate > 0 ? setStep(2) : runImport())}>
               Continue <ArrowRight size={14} className="ml-1.5" />
             </Button>
           </div>
@@ -537,16 +662,30 @@ export default function DataImport() {
                       <input type="radio" name={`dup-${r.line}`} checked={r.resolution === 'create'} onChange={() => setResolution(r.line, 'create')} className="accent-blue-600" /> Create anyway
                     </label>
                   </div>
-                  <Input placeholder="Reason (required for Create anyway)" className="h-8 text-body" />
+                  {r.resolution === 'create' && (
+                    <Input
+                      placeholder="Reason (required for Create anyway)"
+                      className="h-8 text-body"
+                      value={reasons[r.line] ?? ''}
+                      onChange={(e) => setReasons((prev) => ({ ...prev, [r.line]: e.target.value }))}
+                    />
+                  )}
                 </div>
               ))}
             </CardContent>
           </Card>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
-            <Button onClick={runImport}>
-              <Check size={14} className="mr-1.5" /> Import {counts.ready + counts.warning + duplicates.filter((d) => d.resolution !== 'skip').length} students
-            </Button>
+          <div className="space-y-2">
+            {missingCreateReasons && (
+              <p className="text-meta text-danger text-right">
+                Enter a reason for every row set to Create anyway — it is written to the audit trail (§23.2).
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
+              <Button onClick={runImport} disabled={missingCreateReasons}>
+                <Check size={14} className="mr-1.5" /> Import {counts.ready + counts.warning + duplicates.filter((d) => d.resolution !== 'skip').length} students
+              </Button>
+            </div>
           </div>
         </>
       )}
@@ -573,8 +712,41 @@ export default function DataImport() {
                 </Button>
               </div>
             )}
+            {canUndo && !undone && (() => {
+              const batch = batches.find((b) => b.id === batchId);
+              if (!batch) return null;
+              const blocker = undoBlocker(batch, students, entries);
+              return (
+                <div className="rounded-card border border-hairline bg-panel p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-body font-medium text-ink">Undo this import (§23.7)</div>
+                      <div className="text-meta text-ink-muted">
+                        {blocker
+                          ?? `Removes the ${batch.snos.length} student${batch.snos.length === 1 ? '' : 's'} this import created and their opening balances. Not offered once anyone has a payment, charge or edit (§23.7).`}
+                      </div>
+                    </div>
+                    {!blocker && (confirmId === batch.id ? (
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => setConfirmId(null)}>Keep</Button>
+                        <Button variant="destructive" size="sm" onClick={() => performUndo(batch)}>Yes, undo</Button>
+                      </div>
+                    ) : (
+                      <Button variant="outline" size="sm" onClick={() => setConfirmId(batch.id)}>Undo import</Button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+            {undone && (
+              <div className="rounded-card border border-hairline bg-panel p-3 text-body text-ink-secondary">
+                Import undone — {undone.snos.length} student{undone.snos.length === 1 ? '' : 's'} and{' '}
+                {undone.entryIds.length} opening balance entr{undone.entryIds.length === 1 ? 'y' : 'ies'} removed.
+                Both the import and the undo are in the audit trail (§23.7).
+              </div>
+            )}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => { setRows([]); setSummary(null); setStep(0); }}>
+              <Button variant="outline" onClick={() => { setRows([]); setSummary(null); setReasons({}); setBatchId(null); setUndone(null); setConfirmId(null); setStep(0); }}>
                 Import another file
               </Button>
               <Button onClick={() => navigate('/students')}>

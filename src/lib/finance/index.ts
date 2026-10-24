@@ -13,6 +13,7 @@ export type {
   MoneyDirection,
   MoneyEntry,
   MoneyEntryKind,
+  MoneyFlowMode,
 } from './types.ts';
 
 export * from './entries.ts';
@@ -27,3 +28,10 @@ export * from './bills.ts';
 export * from './attachments.ts';
 export * from './vouchers.ts';
 export * from './seed.ts';
+export * from './recurring.ts';
+export * from './statements.ts';
+export * from './budgets.ts';
+export * from './monthClose.ts';
+export * from './reports.ts';
+export * from './reportCatalog.ts';
+export * from './held.ts';

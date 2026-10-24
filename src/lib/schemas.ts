@@ -19,6 +19,10 @@ export const admissionSchema = z.object({
   gender: z.enum(['', 'Male', 'Female', 'Other']).optional(),
   domicile: z.string().trim().max(50).optional(),
   emergencyContact: z.string().trim().refine(v => isValidContact(v), { message: 'Invalid PK number' }),
+  // §12/§19: guardian or fee payer. Required at admission when the student is under 18 —
+  // the wizard enforces the age rule; the schema only guards the phone's format.
+  guardianName: z.string().trim().max(100).optional(),
+  guardianPhone: z.string().trim().refine(v => !v || isValidContact(v), { message: 'Invalid PK number' }).optional(),
   photoUrl: z.string().nullable().optional(),
   course: z.string().min(1, 'Course is required'),
   program: z.string().min(1, 'Sub-course is required'),

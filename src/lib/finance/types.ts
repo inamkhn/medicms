@@ -41,6 +41,14 @@ export interface MoneyAccount {
 /** §7.1 — direction is literally the word "In" or "Out". */
 export type MoneyDirection = 'In' | 'Out';
 
+/**
+ * The route the money took (§17 "Route (payment mode)"). A student payment is
+ * created by the Payments flow, which already knows its mode; storing it on the
+ * entry is what lets the money-flow report split fees by cash, bank and online
+ * without asking the ledger again.
+ */
+export type MoneyFlowMode = 'Cash' | 'Bank' | 'Online' | 'Cheque' | 'Wallet';
+
 /** The kinds of §7.2. "Transfer out and transfer in" is one row of the table
  *  but two kinds, because each side is its own entry; "Reversal" takes the
  *  direction of the opposite of the entry it reverses. */
@@ -85,6 +93,19 @@ export interface MoneyEntry {
   reference?: string;
   /** The receipt, voucher, bill or transfer that created it (§7.1). */
   linkedDoc?: string;
+  /** §17: the route the money took, where the screen that made it knew one. */
+  mode?: MoneyFlowMode;
+  /** §32/§58: on a held cheque payment, the student it belongs to — lets the
+   *  register post a bounce fine to the right ledger and name the row. */
+  studentSno?: number;
+  /** §34/§58: the date written on the cheque itself (the cheque date), distinct
+   *  from `date` (the day it was received). A future one is post-dated. */
+  instrumentDate?: string;
+  /** §58: the drawer bank printed on the cheque. */
+  instrumentBank?: string;
+  /** §34: on the reversal of a held cheque — whether it bounced at the bank or
+   *  was handed back to the student unpaid. Empty on every other entry. */
+  outcome?: 'Bounced' | 'Returned';
   /** Entries created by one action share it (§7.1) — a transfer pair, a
    *  voucher and its money-out, the two sides of a reversed transfer. */
   actionId: string;
